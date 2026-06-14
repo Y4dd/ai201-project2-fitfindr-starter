@@ -21,16 +21,25 @@
   error table, and **Mermaid** architecture diagram with a decision **diamond** for the
   empty-results branch, `listings.json` read only by `search_listings`, and the Groq LLM
   called by the two generative tools. AI Tool Plan (M3+M4) names the exact spec sections.
-- **NEXT: Milestone 3** — implement + isolation-test each tool in `tools.py` (pytest).
-  Prompt one tool at a time from its planning.md block; one required failure-mode test
-  per tool; verify `create_fit_card` output varies across calls (raise temp if not).
+- **Milestone 3: DONE** — all 3 tools implemented in `tools.py` test-first (TDD), each with
+  its required failure-mode test in `tests/test_tools.py` (9 tests, all green).
+  `search_listings` is pure/deterministic; the two LLM tools mock the `_get_groq_client`
+  boundary so the suite runs offline + deterministic. A live Groq smoke run confirmed:
+  populated wardrobe names real pieces (with ids), empty wardrobe gives general advice, and
+  `create_fit_card` varies across identical calls (temp 1.0). Tidied `_get_groq_client`'s
+  `.env` wording and removed the stub TODO scaffolding from docstrings.
+- **NEXT: Milestone 4** — wire the conditional planning loop + session state in `agent.py`
+  (`run_agent`), then `handle_query` in `app.py`. Prompt from planning.md's Planning Loop +
+  State Management + Architecture sections together. Tools are pure: `run_agent` owns the
+  session dict, passes args / stores returns, branches on empty `search_results` and returns
+  early (never calls `suggest_outfit` with empty input).
 
 ## Milestone checklist
 
 - [x] M0 — Setup & context-management scaffolding
 - [x] M1 — Explore data + write "complete interaction" description in planning.md
 - [x] M2 — Fill out all of planning.md (specs, loop logic, diagram, AI plan)
-- [ ] M3 — Implement + isolation-test each tool in tools.py (pytest)
+- [x] M3 — Implement + isolation-test each tool in tools.py (pytest)
 - [ ] M4 — Wire planning loop + state in agent.py; implement handle_query in app.py
 - [ ] M5 — Deliberately trigger each failure mode; screenshot one for the demo
 - [ ] M6 — README (all sections), run app end-to-end, record 3–5 min demo
@@ -38,9 +47,13 @@
 
 ## Repo state
 
-- Starter stubs only: `tools.py` (3 stubs return `[]`/`""`), `agent.py`
-  (`run_agent` returns "not implemented"), `app.py` (`handle_query` stub).
-- Data + `utils/data_loader.py` in place. `planning.md` / `README.md` are templates.
+- `tools.py`: all 3 tools implemented (search pure; `suggest_outfit`/`create_fit_card` call
+  Groq `llama-3.3-70b-versatile`, each wrapped in try/except → graceful fallback strings).
+- `tests/test_tools.py` (9 passing) + `pytest.ini` (`pythonpath = .`, testpaths `tests`,
+  filters the groq/pydantic-on-3.14 warning). Run with `pytest` from the project root.
+- `agent.py` (`run_agent` stub) and `app.py` (`handle_query` stub) still untouched — M4.
+- Data + `utils/data_loader.py` in place. `README.md` is still the starter template (full
+  README w/ tool signatures is an M6 deliverable; signatures already match planning.md).
 
 ## Decisions locked (M2)
 
@@ -67,6 +80,8 @@
 - `create_fit_card` needs higher temperature so outputs vary.
 - M1 walkthrough was reworded from "the only match" → "the top match is lst_002" so the
   ranked-list scoring (several results, lst_002 ranked #1) doesn't contradict the trace.
-- `tools.py` already imports/calls `load_dotenv()` and `_get_groq_client`'s error string
-  mentions a `.env` file. `GROQ_API_KEY` lives in the shell env, so this is harmless
-  (load_dotenv is a no-op with no `.env`) — tidy that wording in M3 if convenient.
+- DONE (M3): tidied `_get_groq_client` wording (shell env primary, `.env` optional).
+- Test approach for the LLM tools: `tests/test_tools.py` monkeypatches `tools._get_groq_client`
+  to a fake client (deterministic/offline). The committed suite therefore does NOT prove the
+  live "varies" behavior — that was verified by a one-off live smoke run, not a CI test
+  (deliberate, to avoid network flakiness). Reuse this fake-client pattern for agent tests.
