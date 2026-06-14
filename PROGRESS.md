@@ -66,11 +66,24 @@
   filter(s) + item's real size/price); lives in `run_agent`, tools stay pure; invariant
   *never call `suggest_outfit` on empty input* preserved. Diagram intentionally draws the
   canonical both-set ladder; the no-size/price-only edge case is covered in prose.
-- **NEXT: SP2 — plan price-comparison tool** (`compare_price`, a real 4th tool: estimate
-  whether an item's price is fair vs. comparable listings). New session after `/clear`;
-  same brainstorm → approved design → write into `planning.md` flow. Mind the signature
-  constraint — a 4th tool adds a new public signature that must match across code /
-  `planning.md` / `README.md`.
+- **SP2 (plan price-comparison tool): DONE** — design approved + written into `planning.md`
+  (8 spots): a full **Tool 4: compare_price** spec block under Additional Tools, Planning
+  Loop step 5, State Management (`price_check` field), Error Handling row, Architecture
+  (diagram node + Stretch-2 prose), AI Tool Plan (SI2 entry), and the walkthrough (Step 1b +
+  4-panel / 4-tool updates). **Decisions locked:** signature
+  `compare_price(new_item: dict, comparables: list[dict]) -> dict` — **pure & deterministic**
+  (no LLM, no filesystem; the *agent* passes `load_listings()`, the tool self-selects
+  same-category peers, excluding the item by `id`, so the single-data-reader invariant holds).
+  Banding by **percentile of peers** (≤25th great_deal · 25–75 fair · >75 high); median +
+  count cited in the verdict. Returns a 6-key dict `{band, verdict, price, median,
+  n_comparables, category}`. Failure mode = **<3 comparables → `insufficient_data`** (median
+  `None`, never raises), reliably triggered by any **accessories** item (2 peers). Runs as an
+  unconditional, non-branching step after a successful search; surfaces in a **dedicated 4th
+  "Price check" Gradio panel**. Anchor numbers verified against the dataset (lst_002 tee $18 →
+  great_deal vs $21.50 median, 14 comparables).
+- **NEXT: SP3 — plan style-profile memory.** New session after `/clear`; same brainstorm →
+  approved design → write into `planning.md` flow. (SP4 = trend awareness still open — see the
+  trend-source note under Open decisions.)
 
 ## Milestone checklist
 
@@ -83,7 +96,7 @@
 
 **Stretch — PLANNING phase** (one feature per session, `/clear` between; output = updated `planning.md`):
 - [x] SP1 — Plan retry logic w/ fallback
-- [ ] SP2 — Plan price-comparison tool
+- [x] SP2 — Plan price-comparison tool
 - [ ] SP3 — Plan style-profile memory
 - [ ] SP4 — Plan trend awareness
 

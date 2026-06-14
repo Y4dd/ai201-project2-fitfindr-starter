@@ -20,7 +20,7 @@ You must have at least 3 tools. The three required tools are listed — add any 
 Searches the 40-item mock listings dataset (`load_listings()`) for pieces matching a
 free-text `description`, optionally narrowed by `size` and a price ceiling, and returns
 the survivors ranked by keyword relevance. This is the only tool that touches the
-dataset; the other two work on whatever item it surfaces.
+dataset; the other tools work on whatever item it surfaces.
 
 **Input parameters:**
 - `description` (str): free-text keywords describing the wanted piece, e.g.
@@ -119,8 +119,9 @@ reaches this tool after a successful search produced an outfit.
 
 ### Additional Tools (if any)
 
-The core build adds no fourth tool. **Stretch features are specced below** and each
-updates this document before its code is written:
+Stretch features are specced here and each updates this document before its code is
+written. **Stretch 2 adds a real 4th tool (`compare_price`)**; Stretch 1 is a
+planning-loop enhancement with no new public signature:
 
 - **Stretch 1 — Retry logic with fallback** (planning-loop enhancement; **no new tool**,
   so no public signature changes). When `search_listings` returns `[]`, the loop relaxes
@@ -129,8 +130,53 @@ updates this document before its code is written:
   `_search_with_fallback(description: str, size: str | None, max_price: float | None) -> tuple[list[dict], str | None]`
   returning `(results, retry_note)`. Full logic in **Planning Loop**, **State Management**,
   **Error Handling**, and **Architecture** below.
-- *Stretch 2 — price-comparison tool* (`compare_price`, a real 4th tool), *Stretch 3 —
-  style-profile memory*, *Stretch 4 — trend awareness*: to be specced in later sessions.
+- *Stretch 3 — style-profile memory*, *Stretch 4 — trend awareness*: to be specced in
+  later sessions.
+
+#### Tool 4: compare_price (Stretch 2)
+
+**Exact signature:** `compare_price(new_item: dict, comparables: list[dict]) -> dict`
+
+**What it does:**
+Estimates whether `new_item`'s asking price is a good deal by comparing it against the
+prices of **same-category** listings. It is a **pure, deterministic** tool — no LLM and
+no filesystem access. `run_agent` passes `load_listings()` as `comparables`; the tool
+self-selects the peer group, so it can also be called standalone in tests with any list
+of listing dicts.
+
+**Input parameters:**
+- `new_item` (dict): the listing being judged (normally `session["selected_item"]`).
+  Supplies `category`, `price`, and `id`.
+- `comparables` (list[dict]): candidate listings to compare against — `run_agent` passes
+  the full dataset from `load_listings()`. The tool narrows this itself.
+
+**Computation (so this is implementation-ready):**
+1. `cat = new_item["category"]`.
+2. **Peer group:** keep `comparables` whose `category == cat`, **excluding the item
+   itself** by `id`. `n = len(peers)`.
+3. **Guard:** if `n < 3`, return `band="insufficient_data"` with `median=None` (too few
+   peers to judge) — never raises.
+4. `median = statistics.median(peer prices)`.
+5. `percentile = 100 × (count of peers priced strictly below new_item["price"]) / n`.
+6. **Band:** `percentile <= 25 → "great_deal"`, `percentile > 75 → "high"`, else `"fair"`.
+
+**What it returns:**
+A `dict` with six keys: `band` (`"great_deal" | "fair" | "high" | "insufficient_data"`),
+`verdict` (a deterministic, human-readable sentence built from the numbers below),
+`price` (float), `median` (float, or `None` when insufficient), `n_comparables` (int),
+and `category` (str). The `verdict` templates per band:
+- *great_deal:* `💰 Great deal — $18 is below the $21.5 median for tops (14 comparable listings).`
+- *fair:* `💰 Fair price — $32 sits near the $30 median for bottoms (9 comparable listings).`
+- *high:* `💰 Priced high — $38 is above the $30 median for bottoms (9 comparable listings).`
+- *insufficient_data:* `💰 Not enough comparable accessories listings to judge this price (only 2 found).`
+
+`app.py` renders `verdict` in a dedicated "Price check" panel.
+
+**What happens if it fails or returns nothing:**
+The only failure mode is too few comparables (`n < 3`, e.g. any **accessories** item,
+which has just 2 peers in our data) — it returns the `insufficient_data` dict rather than
+raising or guessing. Being pure, an empty or short `comparables` list yields the same
+graceful result. It never raises and always returns a populated dict.
 
 ---
 
@@ -177,11 +223,18 @@ than a fixed call-all-three sequence:
      empty input.
    - **Else** → set `session["selected_item"] = search_results[0]` and continue (this
      includes recovered off-spec items; `retry_note` carries the explanation forward).
-5. **Suggest.** Call `suggest_outfit(selected_item, wardrobe)`; store the string in
+5. **Price check (Stretch 2).** Call
+   `session["price_check"] = compare_price(selected_item, load_listings())`. This runs on
+   **every** successful search (including recovered off-spec items) — it is an added step,
+   not a branch. `agent.py` calls `load_listings()` to assemble the comparable set and
+   passes it in; the tool stays pure (it self-selects same-category peers and never reads
+   the dataset). The returned dict lands in `session["price_check"]` and is never consulted
+   to decide control flow, so it cannot block the later tools.
+6. **Suggest.** Call `suggest_outfit(selected_item, wardrobe)`; store the string in
    `session["outfit_suggestion"]`.
-6. **Fit card.** Call `create_fit_card(outfit_suggestion, selected_item)`; store the
+7. **Fit card.** Call `create_fit_card(outfit_suggestion, selected_item)`; store the
    string in `session["fit_card"]`.
-7. **Done.** `return session`. The loop knows it is finished when either the error
+8. **Done.** `return session`. The loop knows it is finished when either the error
    branch returns early or `fit_card` has been written.
 
 ---
@@ -203,16 +256,18 @@ return values, and never read or write the session directly.
 | `parsed` | `run_agent` parse step (`{description, size, max_price}`) | `run_agent` → args to `search_listings` |
 | `search_results` | `run_agent` (from `_search_with_fallback` → `search_listings`) | `run_agent` branch (selects `results[0]`) |
 | `retry_note` | `run_agent` (from `_search_with_fallback`; Stretch 1) | `app.py` listing panel — banner above the listing; `None` on an exact match |
-| `selected_item` | `run_agent` = `results[0]` after a non-empty search | `run_agent` → arg to `suggest_outfit` & `create_fit_card` |
+| `selected_item` | `run_agent` = `results[0]` after a non-empty search | `run_agent` → arg to `suggest_outfit`, `create_fit_card` & `compare_price` |
+| `price_check` | `run_agent` (from `compare_price`; Stretch 2) | `app.py` "Price check" panel — shows `price_check["verdict"]`; `None` on the error path |
 | `wardrobe` | `_new_session` (passed in) | `run_agent` → arg to `suggest_outfit` |
 | `outfit_suggestion` | `run_agent` (from `suggest_outfit`) | `run_agent` → arg to `create_fit_card` |
 | `fit_card` | `run_agent` (from `create_fit_card`) | `app.py` output panel |
 | `error` | `run_agent` branch, if search was empty | `app.py` output panel (short-circuits the rest) |
 
 `app.py`'s `handle_query()` calls `run_agent()`, then reads the finished session dict:
-if `error` is set it shows that message in the listing panel and leaves the other two
-empty; otherwise it formats `selected_item` into the listing panel and passes
-`outfit_suggestion` and `fit_card` to the other two panels. When `retry_note` is set
+if `error` is set it shows that message in the listing panel and leaves the other three
+empty; otherwise it formats `selected_item` into the listing panel, renders
+`price_check["verdict"]` in the "Price check" panel (Stretch 2), and passes
+`outfit_suggestion` and `fit_card` to the remaining two panels. When `retry_note` is set
 (Stretch 1), it is prepended as a marked banner line above the formatted listing, so the
 user sees what was loosened before reading the off-spec item.
 
@@ -228,6 +283,7 @@ For each tool, describe the specific failure mode you're handling and what the a
 | planning loop (retry, Stretch 1) | Initial search empty, but a looser search could match | Don't error immediately: relax on the ordered ladder (size → price), keep the first non-empty result as `selected_item`, and set `retry_note` naming the dropped filter(s) + the item's real size/price. Errors only if the fully-relaxed search is still empty (see the `search_listings` row). Never drops `description`; never calls `suggest_outfit` on empty input. |
 | suggest_outfit | Wardrobe is empty | Detects `wardrobe["items"] == []` and returns **general** styling advice for the item (silhouettes, colors, vibe) instead of named pieces — a useful non-empty string, never a crash. (A network/LLM error is also caught and returns a graceful fallback string.) |
 | create_fit_card | Outfit input is missing or incomplete | Detects empty/whitespace `outfit` and returns a descriptive error string (*"⚠️ No outfit to write up yet — run a search that finds an item first."*) instead of raising. |
+| compare_price (Stretch 2) | Fewer than 3 same-category comparables (after excluding the item) | Returns a dict with `band="insufficient_data"`, `median=None`, and a verdict explaining there aren't enough comparable listings to judge — never raises. Being pure, an empty/short `comparables` list yields the same graceful result. In our data this is reliably triggered by any **accessories** item (only 2 peers). |
 
 ### Failure-mode verification (Milestone 5)
 
@@ -265,13 +321,14 @@ flowchart TD
     D2 -- "no" --> SELR
     D2 -- "yes — nothing left to relax" --> ERR["set session['error']<br/>'nothing matched even after loosening size / price'"]
     ERR --> RET["return session early<br/>(selected_item, outfit, fit_card, retry_note stay None)"]
-    SEL --> S2["Tool 2 · suggest_outfit(selected_item, wardrobe)"]
-    SELR --> S2
+    SEL --> CP["Tool 4 · compare_price(selected_item, load_listings())<br/>→ session['price_check'] (Stretch 2)"]
+    SELR --> CP
+    CP --> S2["Tool 2 · suggest_outfit(selected_item, wardrobe)"]
     S2 --> S3["Tool 3 · create_fit_card(outfit_suggestion, selected_item)"]
     S3 --> RET2["return session"]
-    RET --> APP2["app.py maps session → 3 panels<br/>(retry_note → banner above listing)"]
+    RET --> APP2["app.py maps session → 4 panels<br/>(retry_note → banner above listing · price_check → 'Price check' panel)"]
     RET2 --> APP2
-    APP2 --> OUT["listing (+ retry banner) | outfit idea | fit card"]
+    APP2 --> OUT["listing (+ retry banner) | price check | outfit idea | fit card"]
 
     %% session state — owned by the loop, never read by the tools
     SESS[("session dict — owned by run_agent<br/>query · parsed · search_results · selected_item · retry_note ·<br/>wardrobe · outfit_suggestion · fit_card · error")]
@@ -280,6 +337,7 @@ flowchart TD
     %% external data sources / services the tools depend on
     DATA[("listings.json<br/>via load_listings()")]
     DATA -. "read by every attempt" .-> SF
+    DATA -. "comparables for the price check" .-> CP
     LLM["Groq LLM · llama-3.3-70b-versatile"]
     S2 -. "calls · temp ≈ 0.7" .-> LLM
     S3 -. "calls · temp ≈ 1.0" .-> LLM
@@ -295,6 +353,15 @@ and `suggest_outfit` is never called with empty input. The **session dict is own
 `run_agent`** — it reads and writes every field and hands values to the tools as
 arguments; the tools never touch it. The only external store read is `listings.json` (via
 `load_listings()` inside `search_listings`), and the two generative tools call the Groq LLM.
+
+**Stretch 2 (price check):** on every successful search the loop runs one extra,
+non-branching step — `compare_price(selected_item, load_listings())` — and stores the
+returned dict in `session["price_check"]`. The tool is **pure and deterministic**: it
+self-selects same-category peers (excluding the item), computes a median + percentile, and
+returns a band + verdict, never reading the dataset itself (so the single-data-reader
+invariant holds — the *agent* passes the data in). `price_check` never gates control flow,
+so it cannot block `suggest_outfit`/`create_fit_card`; `app.py` renders its verdict in a
+dedicated "Price check" panel.
 
 ---
 
@@ -348,15 +415,30 @@ dropping size, recovers by dropping price, **fully-fails** (asserts `error` set,
 and happy-path unaffected (`retry_note` `None`). Then a live run on an off-spec query to
 confirm the banner reads naturally.
 
+**Stretch SI2 — Price-comparison tool:**
+
+I'll use **Claude Code** test-first, prompted with the **Tool 4: compare_price** spec
+block plus the updated **Planning Loop** (step 5), **State Management**, **Error
+Handling**, and **Architecture** sections. **Expect:** a pure, deterministic
+`compare_price(new_item, comparables) -> dict` that self-selects same-category peers
+(excluding the item by `id`), computes median + percentile, and returns the band/verdict
+dict; plus `run_agent` storing `price_check` and `app.py` rendering it in a 4th panel.
+**Verify:** tests before trusting it — the **failure-mode** test (a real **accessories**
+item → `band == "insufficient_data"`, no raise), one test per band (`great_deal` / `fair`
+/ `high`) on small fixture lists, and a test proving the item is excluded from its own
+peer group. All are zero-mock (pure function). Then a live run confirming the "Price
+check" panel shows the right verdict for a populated search.
+
 ---
 
 ## A Complete Interaction (Step by Step)
 
 **What FitFindr does (in three sentences):** FitFindr takes one natural-language
-thrifting request and orchestrates three tools to answer it. The query triggers
+thrifting request and orchestrates four tools to answer it. The query triggers
 `search_listings` (filter by description / size / price); the top match triggers
-`suggest_outfit` (style it against the user's wardrobe); that styling triggers
-`create_fit_card` (write a shareable caption). If `search_listings` finds nothing the
+`compare_price` (is this price fair vs. similar listings?) and `suggest_outfit` (style it
+against the user's wardrobe); that styling triggers `create_fit_card` (write a shareable
+caption). If `search_listings` finds nothing the
 agent stops and tells the user what to adjust instead of calling the later tools with
 empty input; an empty wardrobe makes `suggest_outfit` give general advice; missing
 outfit text makes `create_fit_card` return an error string.
@@ -369,6 +451,13 @@ by keyword overlap, and the **top match is lst_002 — "Y2K Baby Tee — Butterf
 ($18, Depop), which hits all three keywords (`vintage`, `graphic`, `tee`). The agent
 stores the list and sets `selected_item = results[0]`.
 
+**Step 1b — Price check (Stretch 2).** `compare_price(lst_002, load_listings())`. The tool
+compares the $18 tee against the other 14 `tops` in the dataset (median **$21.50**): only
+~21% of them are cheaper, so it returns `band="great_deal"` with the verdict *"💰 Great
+deal — $18 is below the $21.5 median for tops (14 comparable listings)."* Stored in
+`price_check` and shown in the "Price check" panel. (This step is purely additive — it
+never changes which tools run next.)
+
 **Step 2 — Suggest outfit.** `suggest_outfit(lst_002, wardrobe)`. The wardrobe holds the
 user's baggy jeans (w_001) and chunky sneakers (w_007), so the LLM returns a specific
 outfit (fitted tee + baggy jeans + chunky sneakers). Stored in `outfit_suggestion`.
@@ -377,12 +466,12 @@ outfit (fitted tee + baggy jeans + chunky sneakers). Stored in `outfit_suggestio
 the LLM returns a casual, shareable caption naming the item, its $18 price, and Depop.
 Stored in `fit_card`.
 
-**Final output to user:** Three Gradio panels — the listing, the outfit, the fit card —
-from one query, with no re-entry between steps.
+**Final output to user:** Four Gradio panels — the listing, the price check, the outfit,
+and the fit card — from one query, with no re-entry between steps.
 
 **Error path:** An impossible query ("designer ballgown, size XXS, under $5") returns `[]`
 on every ladder attempt (drop size, then drop price), so **Stretch 1** can't recover it;
 the agent sets `session["error"]` (noting it tried loosening) and returns early, leaving
-`outfit_suggestion`, `fit_card`, and `retry_note` as `None` — `suggest_outfit` is never
-called with empty input. A *recoverable* near-miss instead (e.g. an in-stock tee in the
-wrong size) would surface via `retry_note` rather than the error.
+`outfit_suggestion`, `fit_card`, `price_check`, and `retry_note` as `None` — `suggest_outfit`
+is never called with empty input. A *recoverable* near-miss instead (e.g. an in-stock tee
+in the wrong size) would surface via `retry_note` rather than the error.
