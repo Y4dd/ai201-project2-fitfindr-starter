@@ -14,9 +14,19 @@ Tools:
 
 import os
 import re
+import warnings
 
 from dotenv import load_dotenv
-from groq import Groq
+
+# groq 0.15 imports pydantic.v1 internals, which make pydantic emit a UserWarning on
+# Python 3.14+ ("Core Pydantic V1 functionality isn't compatible..."). It's a harmless
+# third-party compat notice — our API calls work fine — so silence it before importing
+# groq, which is what triggers it. (pytest.ini filters the same warning for the test run.)
+warnings.filterwarnings(
+    "ignore", message="Core Pydantic V1 functionality", category=UserWarning
+)
+
+from groq import Groq  # noqa: E402  (import after the warnings filter, on purpose)
 
 from utils.data_loader import load_listings
 

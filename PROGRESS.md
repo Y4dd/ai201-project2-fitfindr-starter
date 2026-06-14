@@ -85,6 +85,9 @@
 
 ## Notes / gotchas
 
+- groq+pydantic-v1-on-py3.14 `UserWarning` is silenced in TWO places: `pytest.ini`
+  (test runs) and a `warnings.filterwarnings(...)` in `tools.py` before `from groq import Groq`
+  (app/agent runs). Harmless third-party compat notice; API calls work fine.
 - Keep function signatures identical across code / planning.md / README (graded).
 - README inputs/outputs are checked against real signatures.
 - `create_fit_card` needs higher temperature so outputs vary.
