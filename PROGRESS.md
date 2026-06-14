@@ -10,15 +10,19 @@
 
 - **Milestone 0 (setup): DONE** — `CLAUDE.md`, `PROGRESS.md`, memory note created.
   `GROQ_API_KEY` confirmed visible to Python (no `.env` needed).
-- **NEXT: Milestones 1 & 2** — understand the data, then fill out `planning.md`
-  (tool specs, planning loop, state, error table, architecture diagram, AI plan,
-  complete-interaction walkthrough). This is the graded design doc — do it well
-  before any tool code.
+- **Milestone 1: DONE** — data explored; "A Complete Interaction" section of
+  `planning.md` written (3-sentence summary + 3-step trace + error path).
+  Anchor query uses spec's `size="M"`; in our data that yields exactly one match
+  (lst_002 Y2K Baby Tee, $18, Depop) — wrote it truthfully rather than faking 3.
+- **NEXT: Milestone 2** — fill out the REST of `planning.md`: tool specs (3 tools,
+  exact signatures), conditional planning-loop logic, state management, error table,
+  text/Mermaid architecture diagram, AI Tool Plan (M3 + M4). Graded design doc —
+  do it well before any tool code.
 
 ## Milestone checklist
 
 - [x] M0 — Setup & context-management scaffolding
-- [ ] M1 — Explore data + write "complete interaction" description in planning.md
+- [x] M1 — Explore data + write "complete interaction" description in planning.md
 - [ ] M2 — Fill out all of planning.md (specs, loop logic, diagram, AI plan)
 - [ ] M3 — Implement + isolation-test each tool in tools.py (pytest)
 - [ ] M4 — Wire planning loop + state in agent.py; implement handle_query in app.py

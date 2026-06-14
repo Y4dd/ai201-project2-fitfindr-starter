@@ -132,18 +132,34 @@ For each tool, describe the specific failure mode you're handling and what the a
 
 ## A Complete Interaction (Step by Step)
 
-Write out what a full user interaction looks like from start to finish — tool call by tool call. Use a specific example query.
+**What FitFindr does (in three sentences):** FitFindr takes one natural-language
+thrifting request and orchestrates three tools to answer it. The query triggers
+`search_listings` (filter by description / size / price); the top match triggers
+`suggest_outfit` (style it against the user's wardrobe); that styling triggers
+`create_fit_card` (write a shareable caption). If `search_listings` finds nothing the
+agent stops and tells the user what to adjust instead of calling the later tools with
+empty input; an empty wardrobe makes `suggest_outfit` give general advice; missing
+outfit text makes `create_fit_card` return an error string.
 
-**Example user query:** "I'm looking for a vintage graphic tee under $30. I mostly wear baggy jeans and chunky sneakers. What's out there and how would I style it?"
+**Example user query:** "I'm looking for a vintage graphic tee under $30, size M. I mostly wear baggy jeans and chunky sneakers. What's out there and how would I style it?"
 
-**Step 1:**
-<!-- What does the agent do first? Which tool is called? With what input? -->
+**Step 1 — Search.** `search_listings("vintage graphic tee", size="M", max_price=30.0)`.
+Size matching is fuzzy, so `"M"` qualifies `"S/M"`. In our data the only size-M graphic
+tee under $30 is **lst_002 — "Y2K Baby Tee — Butterfly Print"** ($18, Depop). The agent
+stores the results and sets `selected_item = results[0]`.
 
-**Step 2:**
-<!-- What happens next? What was returned from step 1? What tool is called now? -->
+**Step 2 — Suggest outfit.** `suggest_outfit(lst_002, wardrobe)`. The wardrobe holds the
+user's baggy jeans (w_001) and chunky sneakers (w_007), so the LLM returns a specific
+outfit (fitted tee + baggy jeans + chunky sneakers). Stored in `outfit_suggestion`.
 
-**Step 3:**
-<!-- Continue until the full interaction is complete -->
+**Step 3 — Fit card.** `create_fit_card(suggestion, lst_002)`. With a higher temperature
+the LLM returns a casual, shareable caption naming the item, its $18 price, and Depop.
+Stored in `fit_card`.
 
-**Final output to user:**
-<!-- What does the user actually see at the end? -->
+**Final output to user:** Three Gradio panels — the listing, the outfit, the fit card —
+from one query, with no re-entry between steps.
+
+**Error path:** An impossible query ("designer ballgown, size XXS, under $5") makes
+`search_listings` return `[]`; the agent sets `session["error"]` and returns early,
+leaving `outfit_suggestion` and `fit_card` as `None` — `suggest_outfit` is never called
+with empty input.
