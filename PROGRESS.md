@@ -28,11 +28,19 @@
   populated wardrobe names real pieces (with ids), empty wardrobe gives general advice, and
   `create_fit_card` varies across identical calls (temp 1.0). Tidied `_get_groq_client`'s
   `.env` wording and removed the stub TODO scaffolding from docstrings.
-- **NEXT: Milestone 4** — wire the conditional planning loop + session state in `agent.py`
-  (`run_agent`), then `handle_query` in `app.py`. Prompt from planning.md's Planning Loop +
-  State Management + Architecture sections together. Tools are pure: `run_agent` owns the
-  session dict, passes args / stores returns, branches on empty `search_results` and returns
-  early (never calls `suggest_outfit` with empty input).
+- **Milestone 4: DONE** — `run_agent` (the conditional planning loop) wired in `agent.py`
+  and `handle_query` in `app.py`, both built test-first. `run_agent` owns the session dict,
+  passes args to the pure tools, stores returns, **branches on empty `search_results`** and
+  returns early (the crown-jewel test monkeypatches `suggest_outfit`/`create_fit_card` to
+  explode, proving they're never reached on a no-match). Parser is the planning.md hybrid:
+  tier-1 regex made robust to word-sizes (`Medium`→`M`) and price variants (`$30`/`30$`/
+  `30 dollars`) so the common cases are deterministic; tier-2 LLM net (gated on empty
+  description) + tier-3 raw-query fallback. New suites `tests/test_agent.py` (9) +
+  `tests/test_app.py` (4) reuse the fake-`_get_groq_client` pattern; **full suite 22 green**.
+  Live smoke run confirmed: happy path fills selected_item→outfit→fit_card (outfit names real
+  wardrobe ids), no-results returns the planning.md error verbatim, Gradio interface builds.
+- **NEXT: Milestone 5** — deliberately trigger each failure mode end-to-end through the app
+  (no-match search, empty wardrobe, empty-outfit fit card) and screenshot one for the demo.
 
 ## Milestone checklist
 
@@ -40,7 +48,7 @@
 - [x] M1 — Explore data + write "complete interaction" description in planning.md
 - [x] M2 — Fill out all of planning.md (specs, loop logic, diagram, AI plan)
 - [x] M3 — Implement + isolation-test each tool in tools.py (pytest)
-- [ ] M4 — Wire planning loop + state in agent.py; implement handle_query in app.py
+- [x] M4 — Wire planning loop + state in agent.py; implement handle_query in app.py
 - [ ] M5 — Deliberately trigger each failure mode; screenshot one for the demo
 - [ ] M6 — README (all sections), run app end-to-end, record 3–5 min demo
 - [ ] Stretch — (≥1) pick after core is solid; update planning.md first
@@ -49,9 +57,11 @@
 
 - `tools.py`: all 3 tools implemented (search pure; `suggest_outfit`/`create_fit_card` call
   Groq `llama-3.3-70b-versatile`, each wrapped in try/except → graceful fallback strings).
-- `tests/test_tools.py` (9 passing) + `pytest.ini` (`pythonpath = .`, testpaths `tests`,
+- `tests/` (22 passing): `test_tools.py` (9) + `test_agent.py` (9) + `test_app.py` (4),
+  all mocking `tools._get_groq_client`. `pytest.ini` (`pythonpath = .`, testpaths `tests`,
   filters the groq/pydantic-on-3.14 warning). Run with `pytest` from the project root.
-- `agent.py` (`run_agent` stub) and `app.py` (`handle_query` stub) still untouched — M4.
+- `agent.py`: `run_agent` (conditional loop) + `_parse_query` / `_llm_parse_query` /
+  `_no_results_message` helpers done. `app.py`: `handle_query` + `_format_listing` done.
 - Data + `utils/data_loader.py` in place. `README.md` is still the starter template (full
   README w/ tool signatures is an M6 deliverable; signatures already match planning.md).
 

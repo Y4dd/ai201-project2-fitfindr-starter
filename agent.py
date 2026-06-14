@@ -18,7 +18,144 @@ Usage (once implemented):
     print(result["error"])   # None on success
 """
 
+import json
+import re
+
+import tools
 from tools import search_listings, suggest_outfit, create_fit_card
+
+
+# ── query parsing (hybrid: regex → LLM fallback → raw query) ───────────────────
+
+# Canonical size labels. Word sizes ("Medium") and abbreviations ("M") both map here
+# so the parser is robust to how the user phrases it (see planning.md, Planning Loop).
+_SIZE_CANON = {
+    "xxs": "XXS", "extra extra small": "XXS",
+    "xs": "XS", "extra small": "XS",
+    "s": "S", "small": "S",
+    "m": "M", "med": "M", "medium": "M",
+    "l": "L", "large": "L",
+    "xl": "XL", "x large": "XL", "xlarge": "XL", "extra large": "XL",
+    "xxl": "XXL", "xx large": "XXL", "xxlarge": "XXL",
+}
+
+# Price phrasings: "under $30", "below 40", "less than $25", "max $20", "< $30",
+# then bare "$30", "30$", and "30 dollars" / "30 bucks".
+_PRICE_PATTERNS = (
+    r"(?:under|below|less than|at most|no more than|up to|max(?:imum)?|<)\s*\$?\s*(\d+(?:\.\d+)?)",
+    r"\$\s*(\d+(?:\.\d+)?)",
+    r"(\d+(?:\.\d+)?)\s*\$",
+    r"(\d+(?:\.\d+)?)\s*(?:dollars?|bucks?|usd)\b",
+)
+
+# Size with an explicit marker ("size M", "sz 8", "in Medium"): markers let single
+# letters and digits match unambiguously ("in M" yes, "in black" no).
+_SIZE_MARKED = re.compile(
+    r"\b(?:size|sz|in)\s+"
+    r"(xxs|xs|s|m|l|xl|xxl|small|med|medium|large|x[- ]?large|xx[- ]?large|"
+    r"extra[- ]?(?:small|large)|\d{1,2})\b",
+    re.IGNORECASE,
+)
+# Bare word sizes (no marker needed): full words + multi-char abbreviations only —
+# never bare single letters ("a small bag" is fine; a lone "m" would be too risky).
+_SIZE_WORD = re.compile(
+    r"\b(xxs|xs|small|medium|large|x[- ]?large|xx[- ]?large|"
+    r"extra[- ]?(?:small|large)|xl|xxl)\b",
+    re.IGNORECASE,
+)
+
+
+def _canon_size(token: str) -> str:
+    """Normalize a captured size token to a canonical label ('Medium' -> 'M')."""
+    key = token.strip().lower().replace("-", " ")
+    key = re.sub(r"\s+", " ", key)
+    if key in _SIZE_CANON:
+        return _SIZE_CANON[key]
+    if key.isdigit():
+        return key
+    return token.strip().upper()
+
+
+def _parse_query(query: str) -> dict:
+    """Tier 1 (pure regex): pull `size` and `max_price` out of a free-text query,
+    leaving the remaining words as the search `description`.
+
+    Returns a dict ``{"description": str, "size": str | None, "max_price": float | None}``.
+    Never raises; an unrecognized query just yields the whole string as description.
+    """
+    rest = query
+
+    # Price: first matching pattern wins; remove its span so it can't pollute keywords.
+    max_price: float | None = None
+    for pattern in _PRICE_PATTERNS:
+        m = re.search(pattern, rest, re.IGNORECASE)
+        if m:
+            max_price = float(m.group(1))
+            rest = rest[: m.start()] + " " + rest[m.end():]
+            break
+
+    # Size: prefer a marked match (consumes the marker too, e.g. "in Medium"), else a
+    # bare word size.
+    size: str | None = None
+    m = _SIZE_MARKED.search(rest)
+    if not m:
+        m = _SIZE_WORD.search(rest)
+    if m:
+        size = _canon_size(m.group(1))
+        rest = rest[: m.start()] + " " + rest[m.end():]
+
+    # Description: whatever survives, with punctuation flattened and whitespace collapsed.
+    description = re.sub(r"[,.;]", " ", rest)
+    description = re.sub(r"\s+", " ", description).strip()
+
+    return {"description": description, "size": size, "max_price": max_price}
+
+
+def _llm_parse_query(query: str) -> dict | None:
+    """Tier 2 (LLM fallback): ask the model to parse a query the regex couldn't, and
+    return ``{"description", "size", "max_price"}``. Returns ``None`` if the model is
+    unreachable or doesn't return usable JSON, so the loop can fall back to the raw query.
+    """
+    prompt = (
+        "Extract secondhand-clothing search filters from the query below. "
+        "Respond with ONLY a JSON object with keys: "
+        '"description" (string of search keywords), '
+        '"size" (a size like "M"/"L"/"8", or null), '
+        '"max_price" (a number in dollars, or null).\n'
+        f"Query: {query}"
+    )
+    try:
+        client = tools._get_groq_client()
+        response = client.chat.completions.create(
+            model=tools._MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+        )
+        text = (response.choices[0].message.content or "").strip()
+        text = re.sub(r"^```(?:json)?|```$", "", text).strip()  # tolerate code fences
+        data = json.loads(text)
+
+        description = str(data.get("description") or "").strip()
+        if not description:
+            return None
+        size = data.get("size")
+        size = str(size).strip() if size else None
+        max_price = data.get("max_price")
+        max_price = float(max_price) if max_price is not None else None
+        return {"description": description, "size": size, "max_price": max_price}
+    except Exception:
+        return None
+
+
+def _no_results_message(parsed: dict) -> str:
+    """Actionable error string for the empty-search branch — echoes the filters back."""
+    msg = f"I couldn't find any listings matching '{parsed['description']}'"
+    if parsed["size"]:
+        msg += f" in size {parsed['size']}"
+    if parsed["max_price"] is not None:
+        msg += f" under ${parsed['max_price']:g}"
+    msg += ". Try removing the size filter, raising your budget, or using broader search terms."
+    return msg
 
 
 # ── session state ─────────────────────────────────────────────────────────────
@@ -92,9 +229,41 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     Before writing code, complete the Planning Loop and State Management sections
     of planning.md — your implementation should match what you described there.
     """
-    # TODO: implement the planning loop
     session = _new_session(query, wardrobe)
-    session["error"] = "Planning loop not yet implemented."
+
+    # Step 2 — parse (hybrid): regex first; if it leaves no description, ask the LLM;
+    # if that fails too, fall back to the raw query so search always gets usable input.
+    parsed = _parse_query(query)
+    if not parsed["description"].strip():
+        llm = _llm_parse_query(query)
+        if llm:
+            parsed = {
+                "description": llm["description"],
+                "size": llm["size"] or parsed["size"],
+                "max_price": parsed["max_price"]
+                if llm["max_price"] is None
+                else llm["max_price"],
+            }
+    if not parsed["description"].strip():
+        parsed["description"] = query.strip()
+    session["parsed"] = parsed
+
+    # Step 3 — search (the only tool that touches the dataset).
+    session["search_results"] = search_listings(
+        parsed["description"], parsed["size"], parsed["max_price"]
+    )
+
+    # Step 4 — the conditional branch: no matches => set an error and stop here.
+    # suggest_outfit is never called with empty input.
+    if not session["search_results"]:
+        session["error"] = _no_results_message(parsed)
+        return session
+
+    # Steps 5–7 — a match: style it, caption it, return the filled session.
+    selected = session["search_results"][0]
+    session["selected_item"] = selected
+    session["outfit_suggestion"] = suggest_outfit(selected, wardrobe)
+    session["fit_card"] = create_fit_card(session["outfit_suggestion"], selected)
     return session
 
 

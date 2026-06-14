@@ -135,12 +135,16 @@ than a fixed call-all-three sequence:
 
 1. `session = _new_session(query, wardrobe)`.
 2. **Parse the query (hybrid).** Run a regex parser that pulls `max_price` from
-   patterns like `under $30` / `$30`, pulls `size` from `size M` / `in M` / `size 8`,
-   and treats the leftover words as `description`.
-   - **Fallback A:** if the regex leaves `description` empty/whitespace, ask the LLM to
-     parse the raw query into `{description, size, max_price}`.
+   patterns like `under $30` / `$30` / `30$` / `30 dollars` / `30 bucks`, pulls `size`
+   from `size M` / `in M` / `size 8` **and word sizes** (`Medium`→`M`, `Large`→`L`,
+   `x-large`→`XL`, normalized to a canonical label), and treats the leftover words as
+   `description`. The regex deliberately covers these phrasing variants itself so the
+   common cases stay deterministic and need no network call.
+   - **Fallback A (LLM net):** if the regex still leaves `description` empty/whitespace,
+     ask the LLM to parse the raw query into `{description, size, max_price}` — the
+     safety net for phrasings the regex can't recognize.
    - **Fallback B:** if that LLM call fails or returns unparseable output, use the raw
-     query string as `description` with `size=None, max_price=None`.
+     query string as `description` (keeping any `size`/`max_price` the regex did find).
    Store the result in `session["parsed"]`. This chain guarantees `search_listings`
    always receives a usable `description`.
 3. **Search.** Call `search_listings(description, size, max_price)` and store the list
