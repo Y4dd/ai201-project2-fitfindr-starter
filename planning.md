@@ -120,8 +120,9 @@ reaches this tool after a successful search produced an outfit.
 ### Additional Tools (if any)
 
 Stretch features are specced here and each updates this document before its code is
-written. **Stretch 2 adds a real 4th tool (`compare_price`)**; Stretch 1 is a
-planning-loop enhancement with no new public signature:
+written. **Stretch 2 adds a real 4th tool (`compare_price`)** and **Stretch 3 a 5th
+(`rank_by_profile`)**; Stretch 1 is a planning-loop enhancement with no new public
+signature:
 
 - **Stretch 1 — Retry logic with fallback** (planning-loop enhancement; **no new tool**,
   so no public signature changes). When `search_listings` returns `[]`, the loop relaxes
@@ -130,8 +131,12 @@ planning-loop enhancement with no new public signature:
   `_search_with_fallback(description: str, size: str | None, max_price: float | None) -> tuple[list[dict], str | None]`
   returning `(results, retry_note)`. Full logic in **Planning Loop**, **State Management**,
   **Error Handling**, and **Architecture** below.
-- *Stretch 3 — style-profile memory*, *Stretch 4 — trend awareness*: to be specced in
-  later sessions.
+- **Stretch 3 — Style-profile memory** (adds a real 5th tool, `rank_by_profile`, plus
+  agent-owned persistence helpers). A profile of the user's taste persists across runs in
+  `data/style_profile.json`; the agent loads it, re-ranks each search by it, then updates
+  and saves it. Full spec in **Tool 5: rank_by_profile** below; loop / state / error /
+  architecture updates follow.
+- *Stretch 4 — trend awareness*: to be specced in a later session.
 
 #### Tool 4: compare_price (Stretch 2)
 
@@ -180,6 +185,71 @@ graceful result. It never raises and always returns a populated dict.
 
 ---
 
+#### Tool 5: rank_by_profile (Stretch 3)
+
+**Exact signature:** `rank_by_profile(listings: list[dict], profile: dict) -> list[dict]`
+
+**What it does:**
+Re-ranks an already-relevance-sorted list of listings by how well each matches the user's
+learned **style profile**, so on-taste pieces rise toward the top. It is a **pure,
+deterministic** tool — no LLM, no filesystem. The agent owns the profile's persistence
+(`_load_profile` / `_save_profile`) and passes the loaded profile in, so the
+single-data-reader discipline holds.
+
+**Input parameters:**
+- `listings` (list[dict]): the search survivors from `_search_with_fallback`, already in
+  keyword-relevance order. Re-ranking only reorders this list — it never adds or drops items.
+- `profile` (dict): the user's style profile (structure below). May be empty/cold on the
+  first-ever run.
+
+**Profile structure (built + persisted by `agent.py`):**
+```json
+{ "style_tags": {"y2k": 3, "graphic": 2},
+  "colors": {"blue": 2, "white": 4},
+  "categories": {"tops": 5, "bottoms": 1},
+  "brands": {"<brand>": 1},
+  "price_sum": 126.0, "price_count": 7, "runs": 7 }
+```
+The categorical maps hold accumulated counts (a frequently-seen tag carries more weight);
+`price_sum` / `price_count` give a running average; `runs` counts updates.
+
+**Computation (so this is implementation-ready):**
+1. **Affinity** per listing = the sum of the profile's stored weights for each of the
+   listing's `style_tags`, `colors`, its `category`, and its `brand`. (Weights already
+   encode importance, so no per-field multipliers.)
+2. **Normalize** across the result set: `rel_norm` from search position (best = 1.0, worst
+   = 0.0; a single result = 1.0), `aff_norm` = min-max of the affinities (all-equal → 0.0).
+3. **Blend:** `final = 0.6 · rel_norm + 0.4 · aff_norm`.
+4. **Stable sort** by `final` descending — equal scores keep the incoming (relevance) order.
+
+**What it returns:**
+A `list[dict]` — the **same** listings, reordered. `run_agent` takes `results[0]` as the
+selected item. With a cold/empty profile every affinity is 0, so `aff_norm` is 0 and the
+result is the unchanged search order.
+
+**What happens if it fails or returns nothing:**
+A cold or empty profile (no taste learned yet) yields a graceful **no-op** — the listings
+come back in their original relevance order, never raising. Being pure, it makes no network
+or disk calls that could fail. The agent layer also guards the file: a missing or corrupt
+`data/style_profile.json` is caught by `_load_profile`, which returns an empty (or
+wardrobe-seeded) profile, feeding this same no-op.
+
+**Agent-side helpers (in `agent.py`, not public tools):**
+- `_load_profile(wardrobe: dict) -> dict` — read `data/style_profile.json`; on a missing or
+  corrupt file, return a profile seeded from the wardrobe's `style_tags` / `colors` /
+  `category` (empty wardrobe → empty skeleton). Never raises.
+- `_update_profile(profile: dict, selected_item: dict) -> dict` — fold the selected
+  listing's `style_tags` / `colors` / `category` / `brand` (`+= 1`) and `price` (into
+  `price_sum` / `price_count`), bump `runs`; return the updated profile.
+- `_save_profile(profile: dict) -> None` — write the profile JSON to `PROFILE_PATH` (a
+  module-level constant pointing at `data/style_profile.json`; tests monkeypatch it to a
+  tmp file so they never touch the committed sample).
+
+The committed `data/style_profile.json` is kept as a **populated sample** so reviewers see
+the accumulated memory; the running app updates it in place.
+
+---
+
 ## Planning Loop
 
 **How does your agent decide which tool to call next?**
@@ -202,7 +272,12 @@ than a fixed call-all-three sequence:
      query string as `description` (keeping any `size`/`max_price` the regex did find).
    Store the result in `session["parsed"]`. This chain guarantees `search_listings`
    always receives a usable `description`.
-3. **Search with fallback (Stretch 1).** Call
+3. **Load style profile (Stretch 3).** `session["style_profile"] = _load_profile(wardrobe)`
+   reads `data/style_profile.json` (the agent owns this I/O; the tool stays pure). On a
+   **missing or corrupt** file it returns a profile **seeded from the wardrobe** (folding
+   each wardrobe item's `style_tags` / `colors` / `category`); it never raises. This profile
+   drives the re-rank in the branch below and is updated from the selection afterward.
+4. **Search with fallback (Stretch 1).** Call
    `results, retry_note = _search_with_fallback(description, size, max_price)`. Internally
    it runs an **ordered relaxation ladder** and returns the first non-empty result set:
    - **Attempt 0 (original):** `search_listings(description, size, max_price)`.
@@ -215,26 +290,36 @@ than a fixed call-all-three sequence:
    **never** dropped. `retry_note` is `None` for an exact (attempt-0) match, otherwise a
    string naming which filter(s) were loosened and the surfaced item's real size/price.
    Store the list in `session["search_results"]` and the note in `session["retry_note"]`.
-4. **Branch (the conditional step):**
+5. **Branch (the conditional step):**
    - **If `search_results == []`** (every applicable ladder attempt was empty) → set
      `session["error"]` to a specific, actionable message that admits the loosening was
      tried, and **`return session` early**. `selected_item`, `outfit_suggestion`,
-     `fit_card`, and `retry_note` stay `None`; `suggest_outfit` is **never** called with
-     empty input.
-   - **Else** → set `session["selected_item"] = search_results[0]` and continue (this
-     includes recovered off-spec items; `retry_note` carries the explanation forward).
-5. **Price check (Stretch 2).** Call
+     `fit_card`, `retry_note`, and `profile_note` stay `None`; `suggest_outfit` is
+     **never** called with empty input, and `rank_by_profile` never runs on an empty list.
+   - **Else (re-rank, Stretch 3)** → `session["search_results"] =
+     rank_by_profile(search_results, session["style_profile"])` reorders the survivors by
+     taste, then `session["selected_item"] = search_results[0]` (this includes recovered
+     off-spec items; `retry_note` carries its explanation forward). Build
+     `session["profile_note"]` from the **pre-update** profile's top 2–3 tastes (e.g.
+     *"↑ Ranked for your style — you tend to like y2k, graphic, blue."*); leave it `None`
+     on a cold start when the profile is still empty (the re-rank is then a no-op).
+6. **Learn + persist (Stretch 3).** `session["style_profile"] =
+   _update_profile(session["style_profile"], selected_item)` folds the selected listing's
+   `style_tags` / `colors` / `category` / `brand` (and `price`) into the profile;
+   `_save_profile(session["style_profile"])` writes it back to `data/style_profile.json`.
+   Done right after selection so the learning is recorded regardless of the later LLM steps.
+7. **Price check (Stretch 2).** Call
    `session["price_check"] = compare_price(selected_item, load_listings())`. This runs on
    **every** successful search (including recovered off-spec items) — it is an added step,
    not a branch. `agent.py` calls `load_listings()` to assemble the comparable set and
    passes it in; the tool stays pure (it self-selects same-category peers and never reads
    the dataset). The returned dict lands in `session["price_check"]` and is never consulted
    to decide control flow, so it cannot block the later tools.
-6. **Suggest.** Call `suggest_outfit(selected_item, wardrobe)`; store the string in
+8. **Suggest.** Call `suggest_outfit(selected_item, wardrobe)`; store the string in
    `session["outfit_suggestion"]`.
-7. **Fit card.** Call `create_fit_card(outfit_suggestion, selected_item)`; store the
+9. **Fit card.** Call `create_fit_card(outfit_suggestion, selected_item)`; store the
    string in `session["fit_card"]`.
-8. **Done.** `return session`. The loop knows it is finished when either the error
+10. **Done.** `return session`. The loop knows it is finished when either the error
    branch returns early or `fit_card` has been written.
 
 ---
@@ -256,6 +341,8 @@ return values, and never read or write the session directly.
 | `parsed` | `run_agent` parse step (`{description, size, max_price}`) | `run_agent` → args to `search_listings` |
 | `search_results` | `run_agent` (from `_search_with_fallback` → `search_listings`) | `run_agent` branch (selects `results[0]`) |
 | `retry_note` | `run_agent` (from `_search_with_fallback`; Stretch 1) | `app.py` listing panel — banner above the listing; `None` on an exact match |
+| `style_profile` | `run_agent` — `_load_profile(wardrobe)`, then `_update_profile` (Stretch 3) | `rank_by_profile` (re-rank arg) + `_save_profile` → `data/style_profile.json` |
+| `profile_note` | `run_agent` — from the pre-update `style_profile`'s top tastes (Stretch 3) | `app.py` listing panel — banner above the listing; `None` on a cold/empty profile |
 | `selected_item` | `run_agent` = `results[0]` after a non-empty search | `run_agent` → arg to `suggest_outfit`, `create_fit_card` & `compare_price` |
 | `price_check` | `run_agent` (from `compare_price`; Stretch 2) | `app.py` "Price check" panel — shows `price_check["verdict"]`; `None` on the error path |
 | `wardrobe` | `_new_session` (passed in) | `run_agent` → arg to `suggest_outfit` |
@@ -269,7 +356,9 @@ empty; otherwise it formats `selected_item` into the listing panel, renders
 `price_check["verdict"]` in the "Price check" panel (Stretch 2), and passes
 `outfit_suggestion` and `fit_card` to the remaining two panels. When `retry_note` is set
 (Stretch 1), it is prepended as a marked banner line above the formatted listing, so the
-user sees what was loosened before reading the off-spec item.
+user sees what was loosened before reading the off-spec item. When `profile_note` is set
+(Stretch 3), it is shown as a second banner above the listing, telling the user the results
+were re-ranked for their learned taste.
 
 ---
 
@@ -284,6 +373,7 @@ For each tool, describe the specific failure mode you're handling and what the a
 | suggest_outfit | Wardrobe is empty | Detects `wardrobe["items"] == []` and returns **general** styling advice for the item (silhouettes, colors, vibe) instead of named pieces — a useful non-empty string, never a crash. (A network/LLM error is also caught and returns a graceful fallback string.) |
 | create_fit_card | Outfit input is missing or incomplete | Detects empty/whitespace `outfit` and returns a descriptive error string (*"⚠️ No outfit to write up yet — run a search that finds an item first."*) instead of raising. |
 | compare_price (Stretch 2) | Fewer than 3 same-category comparables (after excluding the item) | Returns a dict with `band="insufficient_data"`, `median=None`, and a verdict explaining there aren't enough comparable listings to judge — never raises. Being pure, an empty/short `comparables` list yields the same graceful result. In our data this is reliably triggered by any **accessories** item (only 2 peers). |
+| rank_by_profile (Stretch 3) | Cold/empty profile (no taste learned yet) | All affinities are `0`, so the blend reduces to the search-relevance order and the tool returns the listings **unchanged** — never raises. **Agent layer:** a missing or corrupt `data/style_profile.json` is caught in `_load_profile`, which returns an empty (or wardrobe-seeded) profile, feeding this same graceful no-op re-rank. |
 
 ### Failure-mode verification (Milestone 5)
 
@@ -309,29 +399,32 @@ flowchart TD
     U["User query + wardrobe choice"] --> APP["app.py · handle_query()<br/>loads wardrobe via get_example/empty_wardrobe()"]
     APP --> RA["agent.py · run_agent() — the planning loop"]
     RA --> PARSE["parse query (hybrid):<br/>regex → LLM fallback → raw query"]
-    PARSE --> SF["_search_with_fallback (Stretch 1)<br/>ordered relaxation ladder"]
+    PARSE --> LPROF["_load_profile(wardrobe) (Stretch 3)<br/>read data/style_profile.json · seed from wardrobe if missing/corrupt"]
+    LPROF --> SF["_search_with_fallback (Stretch 1)<br/>ordered relaxation ladder"]
     SF --> A0["Attempt 0 · search_listings(description, size, max_price)"]
     A0 --> D0{"results empty?"}
-    D0 -- "no — exact match" --> SEL["session['selected_item'] = results[0]<br/>retry_note = None"]
+    D0 -- "no — exact match" --> SEL["non-empty results<br/>retry_note = None"]
     D0 -- "yes & size was set" --> A1["Attempt 1 · drop size<br/>search_listings(description, None, max_price)"]
     A1 --> D1{"results empty?"}
-    D1 -- "no" --> SELR["session['selected_item'] = results[0]<br/>set retry_note (filter(s) dropped + item's real size/price)"]
+    D1 -- "no" --> SELR["non-empty results<br/>set retry_note (filter(s) dropped + item's real size/price)"]
     D1 -- "yes & max_price was set" --> A2["Attempt 2 · drop size + price<br/>search_listings(description, None, None)"]
     A2 --> D2{"results empty?"}
     D2 -- "no" --> SELR
     D2 -- "yes — nothing left to relax" --> ERR["set session['error']<br/>'nothing matched even after loosening size / price'"]
-    ERR --> RET["return session early<br/>(selected_item, outfit, fit_card, retry_note stay None)"]
-    SEL --> CP["Tool 4 · compare_price(selected_item, load_listings())<br/>→ session['price_check'] (Stretch 2)"]
-    SELR --> CP
+    ERR --> RET["return session early<br/>(selected_item, outfit, fit_card, retry_note, profile_note stay None)"]
+    SEL --> RR["Tool 5 · rank_by_profile(results, profile) (Stretch 3)<br/>selected_item = results[0] · set profile_note"]
+    SELR --> RR
+    RR --> LP["_update_profile + _save_profile (Stretch 3)<br/>→ data/style_profile.json"]
+    LP --> CP["Tool 4 · compare_price(selected_item, load_listings())<br/>→ session['price_check'] (Stretch 2)"]
     CP --> S2["Tool 2 · suggest_outfit(selected_item, wardrobe)"]
     S2 --> S3["Tool 3 · create_fit_card(outfit_suggestion, selected_item)"]
     S3 --> RET2["return session"]
-    RET --> APP2["app.py maps session → 4 panels<br/>(retry_note → banner above listing · price_check → 'Price check' panel)"]
+    RET --> APP2["app.py maps session → 4 panels<br/>(retry_note + profile_note → banners above listing · price_check → 'Price check' panel)"]
     RET2 --> APP2
-    APP2 --> OUT["listing (+ retry banner) | price check | outfit idea | fit card"]
+    APP2 --> OUT["listing (+ retry & style banners) | price check | outfit idea | fit card"]
 
     %% session state — owned by the loop, never read by the tools
-    SESS[("session dict — owned by run_agent<br/>query · parsed · search_results · selected_item · retry_note ·<br/>wardrobe · outfit_suggestion · fit_card · error")]
+    SESS[("session dict — owned by run_agent<br/>query · parsed · search_results · selected_item · retry_note · style_profile · profile_note ·<br/>price_check · wardrobe · outfit_suggestion · fit_card · error")]
     RA <-. "reads + writes" .-> SESS
 
     %% external data sources / services the tools depend on
@@ -341,6 +434,11 @@ flowchart TD
     LLM["Groq LLM · llama-3.3-70b-versatile"]
     S2 -. "calls · temp ≈ 0.7" .-> LLM
     S3 -. "calls · temp ≈ 1.0" .-> LLM
+
+    %% persistent style memory (Stretch 3) — agent owns the I/O; the tool stays pure
+    PROF[("data/style_profile.json<br/>persistent style memory · Stretch 3")]
+    PROF -. "read by _load_profile" .-> LPROF
+    LP -. "written by _save_profile" .-> PROF
 ```
 
 **Stretch 1 (retry ladder):** an empty attempt-0 no longer errors immediately — the loop
@@ -362,6 +460,19 @@ returns a band + verdict, never reading the dataset itself (so the single-data-r
 invariant holds — the *agent* passes the data in). `price_check` never gates control flow,
 so it cannot block `suggest_outfit`/`create_fit_card`; `app.py` renders its verdict in a
 dedicated "Price check" panel.
+
+**Stretch 3 (style-profile memory):** the agent keeps a persistent profile of the user's
+taste in `data/style_profile.json`. `run_agent` loads it at the start via
+`_load_profile(wardrobe)` (seeding from the wardrobe on a cold or corrupt file so the very
+first search is already personalized), and after a successful search the new pure tool
+**`rank_by_profile(listings, profile)`** reorders the survivors with a blended score —
+`0.6 · search-relevance rank + 0.4 · profile affinity` — so on-taste pieces rise without
+burying a strongly relevant match. The agent then folds the selected item into the profile
+(`_update_profile`) and saves it (`_save_profile`), so taste accumulates across runs. The
+**tool stays pure** (no LLM, no filesystem); the agent owns all I/O, preserving the
+single-data-reader discipline. A cold or empty profile makes the re-rank a graceful no-op
+(search order unchanged). `app.py` surfaces a `profile_note` banner above the listing so the
+otherwise-invisible re-rank is visible in the demo.
 
 ---
 
@@ -418,7 +529,7 @@ confirm the banner reads naturally.
 **Stretch SI2 — Price-comparison tool:**
 
 I'll use **Claude Code** test-first, prompted with the **Tool 4: compare_price** spec
-block plus the updated **Planning Loop** (step 5), **State Management**, **Error
+block plus the updated **Planning Loop** (step 7), **State Management**, **Error
 Handling**, and **Architecture** sections. **Expect:** a pure, deterministic
 `compare_price(new_item, comparables) -> dict` that self-selects same-category peers
 (excluding the item by `id`), computes median + percentile, and returns the band/verdict
@@ -429,13 +540,31 @@ item → `band == "insufficient_data"`, no raise), one test per band (`great_dea
 peer group. All are zero-mock (pure function). Then a live run confirming the "Price
 check" panel shows the right verdict for a populated search.
 
+**Stretch SI3 — Style-profile memory:**
+
+I'll use **Claude Code** test-first, prompted with the **Tool 5: rank_by_profile** spec
+block plus the updated **Planning Loop** (steps 3, 5–6), **State Management**, **Error
+Handling**, and **Architecture** sections. **Expect:** a pure, deterministic
+`rank_by_profile(listings, profile) -> list[dict]` that blends search rank with profile
+affinity, plus `agent.py` helpers `_load_profile(wardrobe)` / `_update_profile(profile,
+selected_item)` / `_save_profile(profile)` (file path behind a monkeypatchable
+`PROFILE_PATH`), `run_agent` loading → re-ranking → learning → saving, and `app.py`
+rendering the `profile_note` banner. **Verify:** tests before trusting it — the
+**failure-mode** test (empty profile → listings returned unchanged, no raise), a test that
+a profile favoring an item moves it up, a test that the blend **respects relevance** (a
+strong top match isn't buried by weak affinity), `_update_profile` folds signals correctly,
+and `_load_profile` handles **missing and corrupt** files → empty profile (all pure /
+tmp-path, no network mocks). Then a live run across two queries showing the `profile_note`
+banner and the growing `data/style_profile.json`.
+
 ---
 
 ## A Complete Interaction (Step by Step)
 
 **What FitFindr does (in three sentences):** FitFindr takes one natural-language
-thrifting request and orchestrates four tools to answer it. The query triggers
-`search_listings` (filter by description / size / price); the top match triggers
+thrifting request and orchestrates five tools to answer it. The query triggers
+`search_listings` (filter by description / size / price), then `rank_by_profile` reorders
+the hits by the user's learned taste; the top match triggers
 `compare_price` (is this price fair vs. similar listings?) and `suggest_outfit` (style it
 against the user's wardrobe); that styling triggers `create_fit_card` (write a shareable
 caption). If `search_listings` finds nothing the
@@ -449,7 +578,16 @@ outfit text makes `create_fit_card` return an error string.
 Size matching is token-based, so `"M"` qualifies `"S/M"`. The results come back ranked
 by keyword overlap, and the **top match is lst_002 — "Y2K Baby Tee — Butterfly Print"**
 ($18, Depop), which hits all three keywords (`vintage`, `graphic`, `tee`). The agent
-stores the list and sets `selected_item = results[0]`.
+stores the list; Step 1a's re-rank then picks `selected_item`.
+
+**Step 1a — Personalized re-rank (Stretch 3).** `rank_by_profile(results, style_profile)`.
+The profile (loaded from `data/style_profile.json`, seeded from the wardrobe's y2k/graphic
+leanings) blends each hit's search rank with its taste affinity (`0.6 · rank + 0.4 ·
+affinity`). lst_002 already leads on relevance and matches the profile's `y2k`/`graphic`
+tastes, so it stays #1 and becomes `selected_item`. The agent folds lst_002 into the
+profile, saves it, and sets a `profile_note` banner — *"↑ Ranked for your style — you tend
+to like y2k, graphic, blue."* On a cold first run the profile is empty, so this step is a
+no-op and no banner shows. (Purely additive — it only reorders within the query's hits.)
 
 **Step 1b — Price check (Stretch 2).** `compare_price(lst_002, load_listings())`. The tool
 compares the $18 tee against the other 14 `tops` in the dataset (median **$21.50**): only
@@ -466,12 +604,14 @@ outfit (fitted tee + baggy jeans + chunky sneakers). Stored in `outfit_suggestio
 the LLM returns a casual, shareable caption naming the item, its $18 price, and Depop.
 Stored in `fit_card`.
 
-**Final output to user:** Four Gradio panels — the listing, the price check, the outfit,
-and the fit card — from one query, with no re-entry between steps.
+**Final output to user:** Four Gradio panels — the listing (with the style banner, plus a
+retry banner when relevant), the price check, the outfit, and the fit card — from one query,
+with no re-entry between steps.
 
 **Error path:** An impossible query ("designer ballgown, size XXS, under $5") returns `[]`
 on every ladder attempt (drop size, then drop price), so **Stretch 1** can't recover it;
 the agent sets `session["error"]` (noting it tried loosening) and returns early, leaving
-`outfit_suggestion`, `fit_card`, `price_check`, and `retry_note` as `None` — `suggest_outfit`
-is never called with empty input. A *recoverable* near-miss instead (e.g. an in-stock tee
+`outfit_suggestion`, `fit_card`, `price_check`, `retry_note`, and `profile_note` as `None`
+— `suggest_outfit` is never called with empty input, and `rank_by_profile` never runs on an
+empty list. A *recoverable* near-miss instead (e.g. an in-stock tee
 in the wrong size) would surface via `retry_note` rather than the error.

@@ -81,9 +81,28 @@
   unconditional, non-branching step after a successful search; surfaces in a **dedicated 4th
   "Price check" Gradio panel**. Anchor numbers verified against the dataset (lst_002 tee $18 →
   great_deal vs $21.50 median, 14 comparables).
-- **NEXT: SP3 — plan style-profile memory.** New session after `/clear`; same brainstorm →
-  approved design → write into `planning.md` flow. (SP4 = trend awareness still open — see the
-  trend-source note under Open decisions.)
+- **SP3 (plan style-profile memory): DONE** — design approved + written into `planning.md`
+  (~9 spots): a full **Tool 5: rank_by_profile** spec block under Additional Tools (+ helper
+  signatures), Planning Loop steps 3 / 5–6, State Management (`style_profile` + `profile_note`
+  fields), Error Handling row, Architecture (diagram nodes + Stretch-3 prose; also backfilled
+  `price_check` into the session-state node), AI Tool Plan (SI3 entry), and the walkthrough
+  (Step 1a + intro / output / error updates). **Decisions locked:** signature
+  `rank_by_profile(listings: list[dict], profile: dict) -> list[dict]` — **pure &
+  deterministic** (no LLM, no filesystem; the agent owns load/save). Purpose = **re-rank
+  future searches**; persistence = **JSON file on disk** (`data/style_profile.json`, kept as a
+  committed **sample**, path behind a monkeypatchable `PROFILE_PATH`); signals = **wardrobe
+  seed (cold start) + selected items** (ongoing); re-rank rule = **blend** `0.6·search-rank +
+  0.4·profile-affinity` (min-max normalized, stable sort); failure mode = **cold/empty profile
+  → listings returned unchanged**, plus agent-level missing/corrupt file → empty/seeded profile
+  (never raises). The otherwise-invisible re-rank surfaces via a **`profile_note` banner** above
+  the listing (no new panel). Helpers `_load_profile` / `_update_profile` / `_save_profile` live
+  in `agent.py`; the tool stays pure.
+- **NEXT: SP4 — plan trend awareness** (last planning session). New session after `/clear`;
+  same brainstorm → approved design → write into `planning.md` flow. **Revisit the
+  trend-source decision** (under Open decisions): derive "trending" from the dataset itself
+  (e.g. most common `style_tags`, optionally within the user's size) or a small local mock —
+  keep it offline + testable. After SP4 the planning phase is done → move to the
+  IMPLEMENTATION phase (SI1–SI4), then M6.
 
 ## Milestone checklist
 
@@ -97,7 +116,7 @@
 **Stretch — PLANNING phase** (one feature per session, `/clear` between; output = updated `planning.md`):
 - [x] SP1 — Plan retry logic w/ fallback
 - [x] SP2 — Plan price-comparison tool
-- [ ] SP3 — Plan style-profile memory
+- [x] SP3 — Plan style-profile memory
 - [ ] SP4 — Plan trend awareness
 
 **Stretch — IMPLEMENTATION phase** (one feature per session, `/clear` between; TDD + failure-mode test each):
