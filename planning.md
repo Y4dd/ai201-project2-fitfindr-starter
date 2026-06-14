@@ -202,6 +202,21 @@ For each tool, describe the specific failure mode you're handling and what the a
 | suggest_outfit | Wardrobe is empty | Detects `wardrobe["items"] == []` and returns **general** styling advice for the item (silhouettes, colors, vibe) instead of named pieces — a useful non-empty string, never a crash. (A network/LLM error is also caught and returns a graceful fallback string.) |
 | create_fit_card | Outfit input is missing or incomplete | Detects empty/whitespace `outfit` and returns a descriptive error string (*"⚠️ No outfit to write up yet — run a search that finds an item first."*) instead of raising. |
 
+### Failure-mode verification (Milestone 5)
+
+All three documented failure modes were triggered directly against the tools and
+captured in **`milestone5_tests.png`** (repo root):
+
+1. **`search_listings` — no match.** `search_listings("designer ballgown", size="XXS",
+   max_price=5)` returns `[]` (never raises), exactly as specified.
+2. **`suggest_outfit` — empty wardrobe.** Called with `get_empty_wardrobe()` on a real
+   item (the Y2K baby tee), it returns a useful general-styling string — silhouettes,
+   complementary colors, and example outfits — instead of naming owned pieces. Never
+   empty, never a crash.
+3. **`create_fit_card` — empty outfit.** `create_fit_card("", item)` returns the
+   descriptive error string *"⚠️ No outfit to write up yet — run a search that finds an
+   item first."* instead of raising.
+
 ---
 
 ## Architecture

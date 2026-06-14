@@ -3,7 +3,7 @@
 > Working memory for resuming across sessions. Read this first, then `CLAUDE.md`.
 > Update at the end of every session.
 
-**Due:** Monday 2026-06-15, 2:59 AM EDT.  •  **Today:** 2026-06-13.
+**Due:** Monday 2026-06-15, 2:59 AM EDT.  •  **Today:** 2026-06-14.
 **Mode:** Collaborative (I draft + explain, user decides key calls & reviews).
 
 ## Current status
@@ -39,8 +39,16 @@
   `tests/test_app.py` (4) reuse the fake-`_get_groq_client` pattern; **full suite 22 green**.
   Live smoke run confirmed: happy path fills selected_item→outfit→fit_card (outfit names real
   wardrobe ids), no-results returns the planning.md error verbatim, Gradio interface builds.
-- **NEXT: Milestone 5** — deliberately trigger each failure mode end-to-end through the app
-  (no-match search, empty wardrobe, empty-outfit fit card) and screenshot one for the demo.
+- **Milestone 5: DONE** — deliberately triggered all three documented failure modes
+  directly against the tools and captured them in `milestone5_tests.png`:
+  `search_listings("designer ballgown", "XXS", 5)` → `[]`;
+  `suggest_outfit(item, get_empty_wardrobe())` → general-styling string (no named pieces,
+  no crash); `create_fit_card("", item)` → the "⚠️ No outfit to write up yet…" error
+  string. Referenced from a new "Failure-mode verification (Milestone 5)" subsection
+  under Error Handling in `planning.md`.
+- **NEXT: Milestone 6** — write the full `README.md` (tool inventory, planning-loop
+  explanation, state management, per-tool error handling w/ a real example, spec
+  reflection, AI-usage ≥2), run the app end-to-end, record the 3–5 min demo.
 
 ## Milestone checklist
 
@@ -49,7 +57,7 @@
 - [x] M2 — Fill out all of planning.md (specs, loop logic, diagram, AI plan)
 - [x] M3 — Implement + isolation-test each tool in tools.py (pytest)
 - [x] M4 — Wire planning loop + state in agent.py; implement handle_query in app.py
-- [ ] M5 — Deliberately trigger each failure mode; screenshot one for the demo
+- [x] M5 — Deliberately trigger each failure mode; screenshot one for the demo
 - [ ] M6 — README (all sections), run app end-to-end, record 3–5 min demo
 - [ ] Stretch — (≥1) pick after core is solid; update planning.md first
 
