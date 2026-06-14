@@ -46,9 +46,31 @@
   no crash); `create_fit_card("", item)` → the "⚠️ No outfit to write up yet…" error
   string. Referenced from a new "Failure-mode verification (Milestone 5)" subsection
   under Error Handling in `planning.md`.
-- **NEXT: Milestone 6** — write the full `README.md` (tool inventory, planning-loop
-  explanation, state management, per-tool error handling w/ a real example, spec
-  reflection, AI-usage ≥2), run the app end-to-end, record the 3–5 min demo.
+- **Core (M0–M5): DONE.** Remaining work reorganized (per user) into a **stretch phase**,
+  then the demo. New workflow: plan **all four** stretch features first — one feature per
+  session, `/clear` between, each updating `planning.md` — then implement them the same
+  way (one per session, `/clear` between, TDD + a failure-mode test each), then finish
+  with **M6** (full README + run app + 3–5 min demo).
+- **Stretch features chosen (all four).** Recommended order = lowest-risk / highest-value
+  first, so a time crunch still lands the strongest ones (deadline is **tomorrow,
+  Mon 2026-06-15 2:59 AM EDT**): (1) **retry logic w/ fallback**, (2) **price-comparison
+  tool**, (3) **style-profile memory**, (4) **trend awareness**.
+- **SP1 (plan retry-logic-with-fallback): DONE** — design approved + written into
+  `planning.md` (7 spots): Additional Tools (Stretch-1 entry + helper signature
+  `_search_with_fallback(...) -> tuple[list[dict], str | None]`), Planning Loop §3–4 (the
+  ordered ladder: attempt 0 → drop size → drop size+price, skip no-ops, first hit wins),
+  State Management (new `retry_note` field + app banner), Error Handling (updated
+  `search_listings` row + new retry row), Architecture (diagram + prose), AI Tool Plan
+  (SI1 entry), and the walkthrough error path. **Decisions locked:** ordered ladder
+  size→price (description never dropped); note *names the exact tradeoff* (dropped
+  filter(s) + item's real size/price); lives in `run_agent`, tools stay pure; invariant
+  *never call `suggest_outfit` on empty input* preserved. Diagram intentionally draws the
+  canonical both-set ladder; the no-size/price-only edge case is covered in prose.
+- **NEXT: SP2 — plan price-comparison tool** (`compare_price`, a real 4th tool: estimate
+  whether an item's price is fair vs. comparable listings). New session after `/clear`;
+  same brainstorm → approved design → write into `planning.md` flow. Mind the signature
+  constraint — a 4th tool adds a new public signature that must match across code /
+  `planning.md` / `README.md`.
 
 ## Milestone checklist
 
@@ -58,8 +80,20 @@
 - [x] M3 — Implement + isolation-test each tool in tools.py (pytest)
 - [x] M4 — Wire planning loop + state in agent.py; implement handle_query in app.py
 - [x] M5 — Deliberately trigger each failure mode; screenshot one for the demo
-- [ ] M6 — README (all sections), run app end-to-end, record 3–5 min demo
-- [ ] Stretch — (≥1) pick after core is solid; update planning.md first
+
+**Stretch — PLANNING phase** (one feature per session, `/clear` between; output = updated `planning.md`):
+- [x] SP1 — Plan retry logic w/ fallback
+- [ ] SP2 — Plan price-comparison tool
+- [ ] SP3 — Plan style-profile memory
+- [ ] SP4 — Plan trend awareness
+
+**Stretch — IMPLEMENTATION phase** (one feature per session, `/clear` between; TDD + failure-mode test each):
+- [ ] SI1 — Implement retry logic w/ fallback
+- [ ] SI2 — Implement price-comparison tool
+- [ ] SI3 — Implement style-profile memory
+- [ ] SI4 — Implement trend awareness
+
+- [ ] M6 — README (all sections incl. new tools), run app end-to-end, record 3–5 min demo
 
 ## Repo state
 
@@ -86,10 +120,14 @@
 
 ## Open decisions
 
-- **Which stretch feature(s)?** User wants stretch goals. Candidates:
-  price-comparison tool, style-profile memory, trend awareness, retry-with-fallback.
-  Decide after core works. (Retry-with-fallback pairs naturally with the loop;
-  price-comparison is a clean 4th tool.)
+- **Which stretch feature(s)? — RESOLVED (2026-06-14):** all four, in this order —
+  retry-logic-with-fallback, price-comparison tool, style-profile memory, trend awareness.
+  Plan-all-then-implement workflow (see Current status). Order is risk/value-ranked so a
+  time crunch still lands the best ones.
+- **Trend awareness source (open, revisit in SP4):** the spec says "a public fashion
+  platform," but the project is meant to run offline with no new accounts. Likely resolve
+  by deriving "trending" from the dataset itself (e.g. most common `style_tags` in the
+  user's size) or a small local mock — decide during SP4 so it stays testable.
 
 ## Notes / gotchas
 

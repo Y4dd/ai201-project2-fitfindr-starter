@@ -18,6 +18,12 @@ done, and what's next. This file holds the rules that don't change.
   and tweaks. The user must understand each piece (demo narration + reflection).
 - **One milestone per session.** At milestone end: commit → update `PROGRESS.md`
   → user runs `/clear`. Durable state lives in files + git, never only in chat.
+- **Stretch phase (after M5):** plan **all** chosen stretch features first — one feature
+  per session, `/clear` between, each ending by updating `planning.md` — then implement
+  them the same way (one feature per session, `/clear` between, TDD + a failure-mode
+  test each), then finish with the M6 README + demo. Same collaborative draft-and-explain
+  mode throughout; planning a feature = brainstorm → approved design → write into
+  `planning.md` (no implementation code in a planning session).
 - Commit per milestone with a clear message.
 
 ## Hard constraints (these lose points if they drift)

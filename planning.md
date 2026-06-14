@@ -119,9 +119,18 @@ reaches this tool after a successful search produced an outfit.
 
 ### Additional Tools (if any)
 
-None for the core build. Stretch candidates (a `compare_price` fourth tool, or
-retry-with-loosened-constraints fallback in the loop) will be designed **here first**
-and this document updated before any stretch code is written.
+The core build adds no fourth tool. **Stretch features are specced below** and each
+updates this document before its code is written:
+
+- **Stretch 1 — Retry logic with fallback** (planning-loop enhancement; **no new tool**,
+  so no public signature changes). When `search_listings` returns `[]`, the loop relaxes
+  constraints on an ordered ladder and retries before erroring, telling the user exactly
+  what it changed. Implemented as one pure, tested helper in `agent.py`:
+  `_search_with_fallback(description: str, size: str | None, max_price: float | None) -> tuple[list[dict], str | None]`
+  returning `(results, retry_note)`. Full logic in **Planning Loop**, **State Management**,
+  **Error Handling**, and **Architecture** below.
+- *Stretch 2 — price-comparison tool* (`compare_price`, a real 4th tool), *Stretch 3 —
+  style-profile memory*, *Stretch 4 — trend awareness*: to be specced in later sessions.
 
 ---
 
@@ -147,13 +156,27 @@ than a fixed call-all-three sequence:
      query string as `description` (keeping any `size`/`max_price` the regex did find).
    Store the result in `session["parsed"]`. This chain guarantees `search_listings`
    always receives a usable `description`.
-3. **Search.** Call `search_listings(description, size, max_price)` and store the list
-   in `session["search_results"]`.
+3. **Search with fallback (Stretch 1).** Call
+   `results, retry_note = _search_with_fallback(description, size, max_price)`. Internally
+   it runs an **ordered relaxation ladder** and returns the first non-empty result set:
+   - **Attempt 0 (original):** `search_listings(description, size, max_price)`.
+   - **Attempt 1 (drop size)** — only if `size` was set:
+     `search_listings(description, None, max_price)`.
+   - **Attempt 2 (drop size + price)** — only if `max_price` was set:
+     `search_listings(description, None, None)`.
+   No-op attempts are skipped (e.g. there is nothing to relax when both `size` and
+   `max_price` are `None`). The first attempt that returns results wins; `description` is
+   **never** dropped. `retry_note` is `None` for an exact (attempt-0) match, otherwise a
+   string naming which filter(s) were loosened and the surfaced item's real size/price.
+   Store the list in `session["search_results"]` and the note in `session["retry_note"]`.
 4. **Branch (the conditional step):**
-   - **If `search_results == []`** → set `session["error"]` to a specific, actionable
-     message and **`return session` early**. `selected_item`, `outfit_suggestion`, and
-     `fit_card` stay `None`; `suggest_outfit` is **never** called with empty input.
-   - **Else** → set `session["selected_item"] = search_results[0]` and continue.
+   - **If `search_results == []`** (every applicable ladder attempt was empty) → set
+     `session["error"]` to a specific, actionable message that admits the loosening was
+     tried, and **`return session` early**. `selected_item`, `outfit_suggestion`,
+     `fit_card`, and `retry_note` stay `None`; `suggest_outfit` is **never** called with
+     empty input.
+   - **Else** → set `session["selected_item"] = search_results[0]` and continue (this
+     includes recovered off-spec items; `retry_note` carries the explanation forward).
 5. **Suggest.** Call `suggest_outfit(selected_item, wardrobe)`; store the string in
    `session["outfit_suggestion"]`.
 6. **Fit card.** Call `create_fit_card(outfit_suggestion, selected_item)`; store the
@@ -178,7 +201,8 @@ return values, and never read or write the session directly.
 |-------|-----------|------------------------------------------|
 | `query` | `_new_session` (raw input) | `run_agent` parse step |
 | `parsed` | `run_agent` parse step (`{description, size, max_price}`) | `run_agent` → args to `search_listings` |
-| `search_results` | `run_agent` (from `search_listings`) | `run_agent` branch (selects `results[0]`) |
+| `search_results` | `run_agent` (from `_search_with_fallback` → `search_listings`) | `run_agent` branch (selects `results[0]`) |
+| `retry_note` | `run_agent` (from `_search_with_fallback`; Stretch 1) | `app.py` listing panel — banner above the listing; `None` on an exact match |
 | `selected_item` | `run_agent` = `results[0]` after a non-empty search | `run_agent` → arg to `suggest_outfit` & `create_fit_card` |
 | `wardrobe` | `_new_session` (passed in) | `run_agent` → arg to `suggest_outfit` |
 | `outfit_suggestion` | `run_agent` (from `suggest_outfit`) | `run_agent` → arg to `create_fit_card` |
@@ -188,7 +212,9 @@ return values, and never read or write the session directly.
 `app.py`'s `handle_query()` calls `run_agent()`, then reads the finished session dict:
 if `error` is set it shows that message in the listing panel and leaves the other two
 empty; otherwise it formats `selected_item` into the listing panel and passes
-`outfit_suggestion` and `fit_card` to the other two panels.
+`outfit_suggestion` and `fit_card` to the other two panels. When `retry_note` is set
+(Stretch 1), it is prepended as a marked banner line above the formatted listing, so the
+user sees what was loosened before reading the off-spec item.
 
 ---
 
@@ -198,7 +224,8 @@ For each tool, describe the specific failure mode you're handling and what the a
 
 | Tool | Failure mode | Agent response |
 |------|-------------|----------------|
-| search_listings | No results match the query | Tool returns `[]` (no raise). The loop sets `session["error"]`, e.g. *"I couldn't find any listings matching 'designer ballgown' in size XXS under $5. Try removing the size filter, raising your budget, or using broader terms like 'dress'."*, and returns early without calling the later tools. |
+| search_listings | No results match the query | Tool returns `[]` (no raise). **Stretch 1:** the loop first runs the relaxation ladder (drop size → drop size + price) via `_search_with_fallback`. If a relaxed attempt recovers results, the loop continues on the off-spec item and surfaces `retry_note`. Only if **every** applicable attempt is empty does it set `session["error"]` — reworded to admit the loosening was tried: *"I couldn't find anything matching 'designer ballgown', even after removing the size and price filters. Try broader terms like 'dress'."* — and return early without calling the later tools. |
+| planning loop (retry, Stretch 1) | Initial search empty, but a looser search could match | Don't error immediately: relax on the ordered ladder (size → price), keep the first non-empty result as `selected_item`, and set `retry_note` naming the dropped filter(s) + the item's real size/price. Errors only if the fully-relaxed search is still empty (see the `search_listings` row). Never drops `description`; never calls `suggest_outfit` on empty input. |
 | suggest_outfit | Wardrobe is empty | Detects `wardrobe["items"] == []` and returns **general** styling advice for the item (silhouettes, colors, vibe) instead of named pieces — a useful non-empty string, never a crash. (A network/LLM error is also caught and returns a graceful fallback string.) |
 | create_fit_card | Outfit input is missing or incomplete | Detects empty/whitespace `outfit` and returns a descriptive error string (*"⚠️ No outfit to write up yet — run a search that finds an item first."*) instead of raising. |
 
@@ -226,36 +253,48 @@ flowchart TD
     U["User query + wardrobe choice"] --> APP["app.py · handle_query()<br/>loads wardrobe via get_example/empty_wardrobe()"]
     APP --> RA["agent.py · run_agent() — the planning loop"]
     RA --> PARSE["parse query (hybrid):<br/>regex → LLM fallback → raw query"]
-    PARSE --> S1["Tool 1 · search_listings(description, size, max_price)"]
-    S1 --> DEC{"search_results empty?"}
-    DEC -- "yes — no match" --> ERR["set session['error']<br/>'No listings… loosen size / price / terms'"]
-    ERR --> RET["return session early<br/>(outfit_suggestion, fit_card stay None)"]
-    DEC -- "no" --> SEL["session['selected_item'] = results[0]"]
+    PARSE --> SF["_search_with_fallback (Stretch 1)<br/>ordered relaxation ladder"]
+    SF --> A0["Attempt 0 · search_listings(description, size, max_price)"]
+    A0 --> D0{"results empty?"}
+    D0 -- "no — exact match" --> SEL["session['selected_item'] = results[0]<br/>retry_note = None"]
+    D0 -- "yes & size was set" --> A1["Attempt 1 · drop size<br/>search_listings(description, None, max_price)"]
+    A1 --> D1{"results empty?"}
+    D1 -- "no" --> SELR["session['selected_item'] = results[0]<br/>set retry_note (filter(s) dropped + item's real size/price)"]
+    D1 -- "yes & max_price was set" --> A2["Attempt 2 · drop size + price<br/>search_listings(description, None, None)"]
+    A2 --> D2{"results empty?"}
+    D2 -- "no" --> SELR
+    D2 -- "yes — nothing left to relax" --> ERR["set session['error']<br/>'nothing matched even after loosening size / price'"]
+    ERR --> RET["return session early<br/>(selected_item, outfit, fit_card, retry_note stay None)"]
     SEL --> S2["Tool 2 · suggest_outfit(selected_item, wardrobe)"]
+    SELR --> S2
     S2 --> S3["Tool 3 · create_fit_card(outfit_suggestion, selected_item)"]
     S3 --> RET2["return session"]
-    RET --> APP2["app.py maps session → 3 panels"]
+    RET --> APP2["app.py maps session → 3 panels<br/>(retry_note → banner above listing)"]
     RET2 --> APP2
-    APP2 --> OUT["listing | outfit idea | fit card"]
+    APP2 --> OUT["listing (+ retry banner) | outfit idea | fit card"]
 
     %% session state — owned by the loop, never read by the tools
-    SESS[("session dict — owned by run_agent<br/>query · parsed · search_results · selected_item ·<br/>wardrobe · outfit_suggestion · fit_card · error")]
+    SESS[("session dict — owned by run_agent<br/>query · parsed · search_results · selected_item · retry_note ·<br/>wardrobe · outfit_suggestion · fit_card · error")]
     RA <-. "reads + writes" .-> SESS
 
     %% external data sources / services the tools depend on
     DATA[("listings.json<br/>via load_listings()")]
-    DATA -. "read by" .-> S1
+    DATA -. "read by every attempt" .-> SF
     LLM["Groq LLM · llama-3.3-70b-versatile"]
     S2 -. "calls · temp ≈ 0.7" .-> LLM
     S3 -. "calls · temp ≈ 1.0" .-> LLM
 ```
 
-The error branch (`search_results empty?` → **yes**) terminates the flow early at
-`ERR → return session`, so control never reaches `suggest_outfit` or `create_fit_card`.
-The **session dict is owned by `run_agent`** — it reads and writes every field and hands
-values to the tools as arguments; the tools never touch it. The only external store a
-tool reads is `listings.json` (via `load_listings()` inside `search_listings`), and the
-two generative tools call the Groq LLM.
+**Stretch 1 (retry ladder):** an empty attempt-0 no longer errors immediately — the loop
+relaxes constraints in order (drop size → drop size + price), skipping any attempt that
+wouldn't change anything (there is no size or no price to drop), and stops at the first
+attempt that returns results, carrying a `retry_note` forward. The error branch is reached
+only when **every** applicable attempt is empty; it still terminates the flow early at
+`ERR → return session`, so control never reaches `suggest_outfit` or `create_fit_card`,
+and `suggest_outfit` is never called with empty input. The **session dict is owned by
+`run_agent`** — it reads and writes every field and hands values to the tools as
+arguments; the tools never touch it. The only external store read is `listings.json` (via
+`load_listings()` inside `search_listings`), and the two generative tools call the Groq LLM.
 
 ---
 
@@ -296,6 +335,19 @@ I'll use **Claude Code**, prompted with the **Planning Loop**, **State Managemen
   the three panels, showing `error` alone when set. **Verify:** launch `python app.py` and
   confirm state flows end-to-end and the no-results error shows only in the listing panel.
 
+**Stretch SI1 — Retry logic with fallback:**
+
+I'll use **Claude Code** test-first, prompted with this feature's **Additional Tools**
+entry plus the updated **Planning Loop**, **State Management**, **Error Handling**, and
+**Architecture** sections. **Expect:** a pure helper `_search_with_fallback(description,
+size, max_price) -> (results, retry_note)` running the ordered ladder (attempt 0 → drop
+size → drop size + price, skipping no-ops), plus `run_agent` storing `retry_note` and
+`app.py` rendering it as a banner. **Verify:** four tests before trusting it — recovers by
+dropping size, recovers by dropping price, **fully-fails** (asserts `error` set,
+`retry_note` `None`, and a monkeypatched `suggest_outfit` that raises is never reached),
+and happy-path unaffected (`retry_note` `None`). Then a live run on an off-spec query to
+confirm the banner reads naturally.
+
 ---
 
 ## A Complete Interaction (Step by Step)
@@ -328,7 +380,9 @@ Stored in `fit_card`.
 **Final output to user:** Three Gradio panels — the listing, the outfit, the fit card —
 from one query, with no re-entry between steps.
 
-**Error path:** An impossible query ("designer ballgown, size XXS, under $5") makes
-`search_listings` return `[]`; the agent sets `session["error"]` and returns early,
-leaving `outfit_suggestion` and `fit_card` as `None` — `suggest_outfit` is never called
-with empty input.
+**Error path:** An impossible query ("designer ballgown, size XXS, under $5") returns `[]`
+on every ladder attempt (drop size, then drop price), so **Stretch 1** can't recover it;
+the agent sets `session["error"]` (noting it tried loosening) and returns early, leaving
+`outfit_suggestion`, `fit_card`, and `retry_note` as `None` — `suggest_outfit` is never
+called with empty input. A *recoverable* near-miss instead (e.g. an in-stock tee in the
+wrong size) would surface via `retry_note` rather than the error.
