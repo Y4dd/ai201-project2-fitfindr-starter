@@ -97,12 +97,30 @@
   (never raises). The otherwise-invisible re-rank surfaces via a **`profile_note` banner** above
   the listing (no new panel). Helpers `_load_profile` / `_update_profile` / `_save_profile` live
   in `agent.py`; the tool stays pure.
-- **NEXT: SP4 — plan trend awareness** (last planning session). New session after `/clear`;
-  same brainstorm → approved design → write into `planning.md` flow. **Revisit the
-  trend-source decision** (under Open decisions): derive "trending" from the dataset itself
-  (e.g. most common `style_tags`, optionally within the user's size) or a small local mock —
-  keep it offline + testable. After SP4 the planning phase is done → move to the
-  IMPLEMENTATION phase (SI1–SI4), then M6.
+- **SP4 (plan trend awareness): DONE** — design approved + written into `planning.md` (9 spots:
+  Additional Tools intro + Stretch-4 bullet, **Tool 6: check_trends** spec block, Planning Loop
+  step 8, State Management `trend_check` row + banner prose, Error Handling row, Architecture
+  (CT node + new Google Trends service node + Stretch-4 prose), AI Tool Plan SI4, and the
+  walkthrough — 6-tool summary + Step 1c). **Decisions locked:** the brief's "public fashion
+  platform" = **live Google Trends via `pytrends`** (no new account — honors brief line 80; the
+  earlier "offline" framing was wrong, the app already calls Groq live). Signature
+  `check_trends(new_item: dict, listings: list[dict], size: str | None = None) -> dict` — **not
+  pure** (makes its own external call like the LLM tools, wrapped to never raise). **Hybrid
+  size:** the dataset's size bucket (token-match) picks ≤5 candidate styles available in the
+  user's size (item's own tags first); **Google Trends ranks them** by live search momentum
+  (one `build_payload`+`interest_over_time` call → top-3 `trending`). Returns a 6-key dict
+  `{band, verdict, trending, item_tags_on_trend, size, source}`; `band ∈ on_trend / off_trend /
+  insufficient_data / unavailable`. **Failure mode (required test):** Trends call fails/429 →
+  `band="unavailable"`, never raises (mock the `_fetch_trend_ranking` seam to raise — same
+  pattern as `_get_groq_client`); secondary `insufficient_data` on a sparse size bucket (<3,
+  e.g. `W28`=2). Surfaces as a **banner** above the listing (user's UI call), not a 5th panel.
+  **New dependency: `pytrends`** (archived/unofficial — fine for light use; document in README).
+  Live `trending` varies run-to-run, so the walkthrough is illustrative; the chosen graceful-
+  "unavailable" path (no dataset fallback) means the demo is best recorded on a live hit.
+- **NEXT: SI1 — implement retry-logic-with-fallback** (planning phase COMPLETE — all four
+  stretch features specced). New session after `/clear`; TDD + a failure-mode test each, one
+  feature per session (SI1 → SI2 → SI3 → SI4), `/clear` between, then **M6** (README + run app
+  + 3–5 min demo). Note: SI4 will need `pip install pytrends` and a `_fetch_trend_ranking` seam.
 
 ## Milestone checklist
 
@@ -117,7 +135,7 @@
 - [x] SP1 — Plan retry logic w/ fallback
 - [x] SP2 — Plan price-comparison tool
 - [x] SP3 — Plan style-profile memory
-- [ ] SP4 — Plan trend awareness
+- [x] SP4 — Plan trend awareness
 
 **Stretch — IMPLEMENTATION phase** (one feature per session, `/clear` between; TDD + failure-mode test each):
 - [ ] SI1 — Implement retry logic w/ fallback
@@ -156,10 +174,14 @@
   retry-logic-with-fallback, price-comparison tool, style-profile memory, trend awareness.
   Plan-all-then-implement workflow (see Current status). Order is risk/value-ranked so a
   time crunch still lands the best ones.
-- **Trend awareness source (open, revisit in SP4):** the spec says "a public fashion
-  platform," but the project is meant to run offline with no new accounts. Likely resolve
-  by deriving "trending" from the dataset itself (e.g. most common `style_tags` in the
-  user's size) or a small local mock — decide during SP4 so it stays testable.
+- **Trend awareness source — RESOLVED (2026-06-14, SP4):** use **live Google Trends via
+  `pytrends`** as the brief's "public fashion platform." It needs **no new account** (honors
+  brief line 80); the earlier "project runs offline" framing was mistaken — the app already
+  calls Groq live. `check_trends` is **not pure**: the dataset's size bucket picks ≤5 candidate
+  styles available in the user's size and Google Trends ranks them by live search momentum
+  (hybrid). On a 429 / network failure it degrades to a graceful `unavailable` verdict (no
+  dataset fallback — user's call). New dependency `pytrends` (archived/unofficial — light use
+  only). Full spec: **Tool 6: check_trends** in `planning.md`.
 
 ## Notes / gotchas
 
@@ -176,3 +198,7 @@
   to a fake client (deterministic/offline). The committed suite therefore does NOT prove the
   live "varies" behavior — that was verified by a one-off live smoke run, not a CI test
   (deliberate, to avoid network flakiness). Reuse this fake-client pattern for agent tests.
+- Stretch 4 introduces a NEW dependency `pytrends` (Google Trends — unofficial, archived 2025,
+  429-prone). Used only by `check_trends`, isolated behind a `_fetch_trend_ranking` seam so
+  tests mock it (same pattern as `_get_groq_client`). Add to requirements during SI4; document
+  the archived/fragile caveat in the M6 README. No new account/key needed (just the package).

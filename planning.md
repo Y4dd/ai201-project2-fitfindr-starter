@@ -120,9 +120,9 @@ reaches this tool after a successful search produced an outfit.
 ### Additional Tools (if any)
 
 Stretch features are specced here and each updates this document before its code is
-written. **Stretch 2 adds a real 4th tool (`compare_price`)** and **Stretch 3 a 5th
-(`rank_by_profile`)**; Stretch 1 is a planning-loop enhancement with no new public
-signature:
+written. **Stretch 2 adds a real 4th tool (`compare_price`)**, **Stretch 3 a 5th
+(`rank_by_profile`)**, and **Stretch 4 a 6th (`check_trends`)**; Stretch 1 is a
+planning-loop enhancement with no new public signature:
 
 - **Stretch 1 — Retry logic with fallback** (planning-loop enhancement; **no new tool**,
   so no public signature changes). When `search_listings` returns `[]`, the loop relaxes
@@ -136,7 +136,13 @@ signature:
   `data/style_profile.json`; the agent loads it, re-ranks each search by it, then updates
   and saves it. Full spec in **Tool 5: rank_by_profile** below; loop / state / error /
   architecture updates follow.
-- *Stretch 4 — trend awareness*: to be specced in a later session.
+- **Stretch 4 — Trend awareness** (adds a real 6th tool, `check_trends`). A tool that calls
+  **Google Trends** (the `pytrends` library — the brief's "public fashion platform," live and
+  needing no new account) to surface which styles are trending in real search right now, scoped
+  to the user's size range via the dataset (the size bucket picks the candidate styles; Google
+  Trends ranks them), plus whether the selected item is on-trend. Makes its external call like
+  the LLM tools and degrades to a graceful `unavailable` verdict on failure. Full spec in
+  **Tool 6: check_trends** below; loop / state / error / architecture updates follow.
 
 #### Tool 4: compare_price (Stretch 2)
 
@@ -250,6 +256,76 @@ the accumulated memory; the running app updates it in place.
 
 ---
 
+#### Tool 6: check_trends (Stretch 4)
+
+**Exact signature:** `check_trends(new_item: dict, listings: list[dict], size: str | None = None) -> dict`
+
+**What it does:**
+Calls **Google Trends** (via the `pytrends` library) to surface which styles are **trending in
+live search right now** among the styles available **in the user's size range**, and flags
+whether `new_item` is on-trend. The dataset picks *which* size-available styles compete; Google
+Trends decides *which of them are actually hot*. Like `suggest_outfit` / `create_fit_card`, it
+makes its external call directly and wraps it so it **never raises** — a failed or rate-limited
+Trends call degrades to a graceful `unavailable` verdict.
+
+**Input parameters:**
+- `new_item` (dict): the listing being judged (normally `session["selected_item"]`). Its
+  `style_tags` are always included among the candidates so the item can be judged, and it is
+  named in the verdict.
+- `listings` (list[dict]): `run_agent` passes the full dataset from `load_listings()`. Used
+  only to build the **size-available candidate set** — *not* as the trend signal.
+- `size` (str | None): the user's **requested** size (`session["parsed"]["size"]`), scoping
+  "the user's size range." `None` (no size requested) → candidates from all listings.
+
+**Computation (so this is implementation-ready):**
+1. **Size bucket (dataset):** keep `listings` whose `size` token-matches `size`, reusing
+   `search_listings`' rule (lowercase the listing's `size`, split on `/` and spaces; keep it
+   only if the requested size equals one of those tokens, so `"M"` matches `"S/M"`, `"M/L"`).
+   `size=None` keeps all listings. `n = len(bucket)`.
+2. **Guard:** if `n < 3`, return `band="insufficient_data"` (`trending=[]`) — too few listings
+   in that size to assemble a trend read. Never raises.
+3. **Candidate styles (dataset):** build up to **5** candidate style tags from the bucket —
+   the `new_item`'s own `style_tags` first (so it can be judged), then the most common tags in
+   that size — deduped, capped at 5. (The cap keeps it to a *single* Google Trends request.)
+4. **Live ranking (Google Trends):** one `pytrends` call — `build_payload(candidates)` →
+   `interest_over_time()` — scores the candidates by recent search momentum; rank them by mean
+   interest, **tie-break alphabetically**. `trending` = the top 3.
+5. **On-trend tags:** `item_tags_on_trend` = the `new_item` `style_tags` that appear in
+   `trending`.
+6. **Band:** `"on_trend"` if `item_tags_on_trend` is non-empty, else `"off_trend"`.
+7. **Graceful unavailable:** if the Trends call errors / 429-rate-limits / returns nothing,
+   return `band="unavailable"` (`trending=[]`) — never raises.
+
+**Isolation seam (for tests):** the live call lives behind a small helper
+`_fetch_trend_ranking(terms: list[str]) -> list[str]` (returns the candidate terms ordered by
+search momentum, or raises on failure). Tests monkeypatch this — exactly as the LLM tools
+monkeypatch `_get_groq_client` — so the suite stays deterministic and offline; a one-off live
+smoke run exercises the real `pytrends` path.
+
+**What it returns:**
+A `dict` with six keys: `band` (`"on_trend" | "off_trend" | "insufficient_data" |
+"unavailable"`), `verdict` (a one-line string for the banner), `trending` (the top-3 tag list,
+`[]` when insufficient/unavailable), `item_tags_on_trend` (list), `size` (the scope used, or
+`None`), and `source` (`"google_trends"` on a live hit, else `"unavailable"`). The `verdict`
+templates per band (live results vary, so the tags shown are illustrative):
+- *on_trend:* `🔥 On-trend — your tee's vintage & y2k styles are among the top-rising fashion searches on Google right now (within what's available in size M).`
+- *off_trend:* `🌿 Under the radar — none of this piece's styles are in the top fashion searches right now (currently rising in M: vintage, cottagecore, grunge).`
+- *insufficient_data:* `🔍 Not enough size W28 listings to assemble a trend read (only 2 found).`
+- *unavailable:* `🌐 Couldn't reach Google Trends just now — trend check unavailable for this run.`
+
+`app.py` renders `verdict` as a banner above the listing (below the retry / style banners).
+
+**What happens if it fails or returns nothing:**
+The **primary** failure mode is the live Google Trends call failing — `pytrends` is archived
+and routinely returns `429 Too Many Requests`, or the network is down — in which case it
+returns the `unavailable` dict rather than raising (this is the required failure-mode test:
+monkeypatch `_fetch_trend_ranking` to raise → assert `band="unavailable"`). A **sparse size
+bucket** (`n < 3`, e.g. any waist/shoe size — `W28` has 2) returns `insufficient_data`.
+`off_trend` (the item shares none of the live top trends) is a **normal** negative path, not an
+error. It always returns a populated dict and never raises.
+
+---
+
 ## Planning Loop
 
 **How does your agent decide which tool to call next?**
@@ -315,11 +391,21 @@ than a fixed call-all-three sequence:
    passes it in; the tool stays pure (it self-selects same-category peers and never reads
    the dataset). The returned dict lands in `session["price_check"]` and is never consulted
    to decide control flow, so it cannot block the later tools.
-8. **Suggest.** Call `suggest_outfit(selected_item, wardrobe)`; store the string in
+8. **Trend check (Stretch 4).** Call
+   `session["trend_check"] = check_trends(selected_item, load_listings(), session["parsed"]["size"])`.
+   Like the price check, this runs on **every** successful search and is an added,
+   non-branching step. It scopes the candidate styles to the user's **requested** size (from
+   `parsed`, not the selected item — so even if the retry ladder dropped the size filter to
+   recover a match, "trending" still means *in the size the user asked for*; `None` → all
+   listings), then asks **Google Trends** which of those styles are rising in live search. The
+   call is wrapped so a 429 / network failure degrades to a graceful `unavailable` verdict and
+   **never raises**. The returned dict lands in `session["trend_check"]` and never gates control
+   flow, so a slow or unavailable Trends call cannot block `suggest_outfit` / `create_fit_card`.
+9. **Suggest.** Call `suggest_outfit(selected_item, wardrobe)`; store the string in
    `session["outfit_suggestion"]`.
-9. **Fit card.** Call `create_fit_card(outfit_suggestion, selected_item)`; store the
+10. **Fit card.** Call `create_fit_card(outfit_suggestion, selected_item)`; store the
    string in `session["fit_card"]`.
-10. **Done.** `return session`. The loop knows it is finished when either the error
+11. **Done.** `return session`. The loop knows it is finished when either the error
    branch returns early or `fit_card` has been written.
 
 ---
@@ -345,6 +431,7 @@ return values, and never read or write the session directly.
 | `profile_note` | `run_agent` — from the pre-update `style_profile`'s top tastes (Stretch 3) | `app.py` listing panel — banner above the listing; `None` on a cold/empty profile |
 | `selected_item` | `run_agent` = `results[0]` after a non-empty search | `run_agent` → arg to `suggest_outfit`, `create_fit_card` & `compare_price` |
 | `price_check` | `run_agent` (from `compare_price`; Stretch 2) | `app.py` "Price check" panel — shows `price_check["verdict"]`; `None` on the error path |
+| `trend_check` | `run_agent` (from `check_trends` → Google Trends; Stretch 4) | `app.py` listing panel — `trend_check["verdict"]` shown as a banner above the listing (incl. the `unavailable` message if Trends fails); `None` on the error path |
 | `wardrobe` | `_new_session` (passed in) | `run_agent` → arg to `suggest_outfit` |
 | `outfit_suggestion` | `run_agent` (from `suggest_outfit`) | `run_agent` → arg to `create_fit_card` |
 | `fit_card` | `run_agent` (from `create_fit_card`) | `app.py` output panel |
@@ -358,7 +445,10 @@ empty; otherwise it formats `selected_item` into the listing panel, renders
 (Stretch 1), it is prepended as a marked banner line above the formatted listing, so the
 user sees what was loosened before reading the off-spec item. When `profile_note` is set
 (Stretch 3), it is shown as a second banner above the listing, telling the user the results
-were re-ranked for their learned taste.
+were re-ranked for their learned taste. On every successful search the agent also renders
+`trend_check["verdict"]` (Stretch 4) as a banner above the listing — telling the user whether
+the piece is on-trend in their size — so up to three banners (retry, style, trend) can stack
+above the formatted listing.
 
 ---
 
@@ -374,6 +464,7 @@ For each tool, describe the specific failure mode you're handling and what the a
 | create_fit_card | Outfit input is missing or incomplete | Detects empty/whitespace `outfit` and returns a descriptive error string (*"⚠️ No outfit to write up yet — run a search that finds an item first."*) instead of raising. |
 | compare_price (Stretch 2) | Fewer than 3 same-category comparables (after excluding the item) | Returns a dict with `band="insufficient_data"`, `median=None`, and a verdict explaining there aren't enough comparable listings to judge — never raises. Being pure, an empty/short `comparables` list yields the same graceful result. In our data this is reliably triggered by any **accessories** item (only 2 peers). |
 | rank_by_profile (Stretch 3) | Cold/empty profile (no taste learned yet) | All affinities are `0`, so the blend reduces to the search-relevance order and the tool returns the listings **unchanged** — never raises. **Agent layer:** a missing or corrupt `data/style_profile.json` is caught in `_load_profile`, which returns an empty (or wardrobe-seeded) profile, feeding this same graceful no-op re-rank. |
+| check_trends (Stretch 4) | Google Trends call fails / rate-limits (`429`) / returns nothing | **Primary failure mode** (this is the required test): the live `pytrends` call is wrapped, so on any error/429/empty response it returns `band="unavailable"`, `trending=[]`, and a friendly "couldn't reach Google Trends" verdict — never raises. (`pytrends` is archived and 429s routinely, so this path is real.) **Secondary:** a sparse size bucket (`< 3` listings, e.g. any **waist/shoe size** — `W28` = 2) returns `band="insufficient_data"` before any network call. `off_trend` (item shares none of the live top trends) is a normal negative path, not an error. |
 
 ### Failure-mode verification (Milestone 5)
 
@@ -416,24 +507,28 @@ flowchart TD
     SELR --> RR
     RR --> LP["_update_profile + _save_profile (Stretch 3)<br/>→ data/style_profile.json"]
     LP --> CP["Tool 4 · compare_price(selected_item, load_listings())<br/>→ session['price_check'] (Stretch 2)"]
-    CP --> S2["Tool 2 · suggest_outfit(selected_item, wardrobe)"]
+    CP --> CT["Tool 6 · check_trends(selected_item, load_listings(), parsed.size)<br/>dataset → size candidates · Google Trends → live ranking<br/>→ session['trend_check'] (Stretch 4)"]
+    CT --> S2["Tool 2 · suggest_outfit(selected_item, wardrobe)"]
     S2 --> S3["Tool 3 · create_fit_card(outfit_suggestion, selected_item)"]
     S3 --> RET2["return session"]
-    RET --> APP2["app.py maps session → 4 panels<br/>(retry_note + profile_note → banners above listing · price_check → 'Price check' panel)"]
+    RET --> APP2["app.py maps session → 4 panels<br/>(retry · style · trend → banners above listing · price_check → 'Price check' panel)"]
     RET2 --> APP2
-    APP2 --> OUT["listing (+ retry & style banners) | price check | outfit idea | fit card"]
+    APP2 --> OUT["listing (+ retry, style & trend banners) | price check | outfit idea | fit card"]
 
     %% session state — owned by the loop, never read by the tools
-    SESS[("session dict — owned by run_agent<br/>query · parsed · search_results · selected_item · retry_note · style_profile · profile_note ·<br/>price_check · wardrobe · outfit_suggestion · fit_card · error")]
+    SESS[("session dict — owned by run_agent<br/>query · parsed · search_results · selected_item · retry_note · style_profile · profile_note ·<br/>price_check · trend_check · wardrobe · outfit_suggestion · fit_card · error")]
     RA <-. "reads + writes" .-> SESS
 
     %% external data sources / services the tools depend on
     DATA[("listings.json<br/>via load_listings()")]
     DATA -. "read by every attempt" .-> SF
     DATA -. "comparables for the price check" .-> CP
+    DATA -. "size candidates for the trend check" .-> CT
     LLM["Groq LLM · llama-3.3-70b-versatile"]
     S2 -. "calls · temp ≈ 0.7" .-> LLM
     S3 -. "calls · temp ≈ 1.0" .-> LLM
+    GTR["Google Trends · pytrends<br/>archived/unofficial · may 429"]
+    CT -. "calls · graceful 'unavailable' on failure" .-> GTR
 
     %% persistent style memory (Stretch 3) — agent owns the I/O; the tool stays pure
     PROF[("data/style_profile.json<br/>persistent style memory · Stretch 3")]
@@ -473,6 +568,23 @@ burying a strongly relevant match. The agent then folds the selected item into t
 single-data-reader discipline. A cold or empty profile makes the re-rank a graceful no-op
 (search order unchanged). `app.py` surfaces a `profile_note` banner above the listing so the
 otherwise-invisible re-rank is visible in the demo.
+
+**Stretch 4 (trend awareness):** on every successful search the loop runs one more
+non-branching step — `check_trends(selected_item, load_listings(), parsed.size)` — and stores
+the returned dict in `session["trend_check"]`. **Google Trends (the `pytrends` library) is the
+brief's "public fashion platform"** — live, real, and needing no new account. The split is
+deliberate: the **dataset** reuses `search_listings`' size token-match to pick up to 5 candidate
+styles *available in the user's size* (the item's own tags first), and **Google Trends** ranks
+those candidates by live search momentum (one `build_payload` + `interest_over_time` call → the
+top-3 `trending`). So the size scope comes from our data while the trend signal is genuinely
+live. Like the LLM tools, `check_trends` makes its own external call (it is **not** pure) and
+wraps it: a 429 / network failure degrades to a graceful `unavailable` verdict and never raises
+— the required failure-mode test monkeypatches the `_fetch_trend_ranking` seam to raise and
+asserts `band="unavailable"`. A sparse size bucket (`< 3` listings) short-circuits to
+`insufficient_data` before any network call. `trend_check` never gates control flow, so a slow
+or unavailable Trends call can't block the later tools; `app.py` renders the verdict as a banner
+above the listing, alongside the retry and style banners. New dependency: `pytrends` (archived/
+unofficial — fine for light use, documented as such in the README).
 
 ---
 
@@ -557,17 +669,36 @@ and `_load_profile` handles **missing and corrupt** files → empty profile (all
 tmp-path, no network mocks). Then a live run across two queries showing the `profile_note`
 banner and the growing `data/style_profile.json`.
 
+**Stretch SI4 — Trend awareness:**
+
+I'll use **Claude Code** test-first, prompted with the **Tool 6: check_trends** spec block
+plus the updated **Planning Loop** (step 8), **State Management**, **Error Handling**, and
+**Architecture** sections. **Expect:** `check_trends(new_item, listings, size=None) -> dict`
+that token-matches the size bucket, builds ≤5 size-available candidate styles, calls **Google
+Trends** (via `pytrends`, isolated behind a `_fetch_trend_ranking(terms)` seam) to rank them,
+and returns the top-3 `trending` list plus the on-trend band/verdict; plus the `pytrends`
+dependency, `run_agent` storing `trend_check` (scoped to `parsed["size"]`), and `app.py`
+rendering the verdict as a banner. **Verify:** tests before trusting it — the **failure-mode**
+test (monkeypatch `_fetch_trend_ranking` to raise/429 → `band == "unavailable"`, no raise), an
+`on_trend` case and an `off_trend` case (both with a *faked* ranking so they're deterministic),
+the `insufficient_data` case (a sparse size like `W28`, which short-circuits before any network
+call), and a test that the size bucket selects the right candidate set (M vs global). The Trends
+boundary is mocked (like `_get_groq_client`); only a one-off **live smoke run** hits real Google
+Trends to confirm the banner reads naturally and that a 429 degrades to the `unavailable`
+message.
+
 ---
 
 ## A Complete Interaction (Step by Step)
 
 **What FitFindr does (in three sentences):** FitFindr takes one natural-language
-thrifting request and orchestrates five tools to answer it. The query triggers
+thrifting request and orchestrates six tools to answer it. The query triggers
 `search_listings` (filter by description / size / price), then `rank_by_profile` reorders
 the hits by the user's learned taste; the top match triggers
-`compare_price` (is this price fair vs. similar listings?) and `suggest_outfit` (style it
-against the user's wardrobe); that styling triggers `create_fit_card` (write a shareable
-caption). If `search_listings` finds nothing the
+`compare_price` (is this price fair vs. similar listings?), `check_trends` (is this style
+rising in live Google Trends search, among what's available in the user's size?), and
+`suggest_outfit` (style it against the user's wardrobe); that styling triggers
+`create_fit_card` (write a shareable caption). If `search_listings` finds nothing the
 agent stops and tells the user what to adjust instead of calling the later tools with
 empty input; an empty wardrobe makes `suggest_outfit` give general advice; missing
 outfit text makes `create_fit_card` return an error string.
@@ -596,6 +727,21 @@ deal — $18 is below the $21.5 median for tops (14 comparable listings)."* Stor
 `price_check` and shown in the "Price check" panel. (This step is purely additive — it
 never changes which tools run next.)
 
+**Step 1c — Trend check (Stretch 4).** `check_trends(lst_002, load_listings(), "M")`. The tool
+first uses the dataset to assemble up to 5 candidate styles *available in size M* (the M bucket
+= 14 listings — M, S/M, M/L — whose most common tags are **vintage, cottagecore, earth tones,
+classic, minimal**), prepending lst_002's own tags (`y2k`, `vintage`, `graphic tee`,
+`cottagecore`) so it can be judged. It then makes **one Google Trends call** to rank those
+candidates by live search momentum. Suppose Trends currently ranks `vintage` and `y2k` highest
+— then `trending` = those top-3, lst_002 shares them, and `band="on_trend"` with a verdict like
+*"🔥 On-trend — your tee's vintage & y2k styles are among the top-rising fashion searches on
+Google right now (within what's available in size M)."* Stored in `trend_check` and shown as a
+banner above the listing. **Because the ranking is live, the exact trending tags vary run to
+run** — this output is illustrative. (Also additive — it never changes which tools run next. A
+sparse size like `W28` short-circuits to `insufficient_data`; if Google Trends 429s or is
+unreachable, the banner shows the graceful *"🌐 Couldn't reach Google Trends just now"*
+message.)
+
 **Step 2 — Suggest outfit.** `suggest_outfit(lst_002, wardrobe)`. The wardrobe holds the
 user's baggy jeans (w_001) and chunky sneakers (w_007), so the LLM returns a specific
 outfit (fitted tee + baggy jeans + chunky sneakers). Stored in `outfit_suggestion`.
@@ -604,14 +750,14 @@ outfit (fitted tee + baggy jeans + chunky sneakers). Stored in `outfit_suggestio
 the LLM returns a casual, shareable caption naming the item, its $18 price, and Depop.
 Stored in `fit_card`.
 
-**Final output to user:** Four Gradio panels — the listing (with the style banner, plus a
-retry banner when relevant), the price check, the outfit, and the fit card — from one query,
-with no re-entry between steps.
+**Final output to user:** Four Gradio panels — the listing (with the style and trend
+banners, plus a retry banner when relevant), the price check, the outfit, and the fit card —
+from one query, with no re-entry between steps.
 
 **Error path:** An impossible query ("designer ballgown, size XXS, under $5") returns `[]`
 on every ladder attempt (drop size, then drop price), so **Stretch 1** can't recover it;
 the agent sets `session["error"]` (noting it tried loosening) and returns early, leaving
-`outfit_suggestion`, `fit_card`, `price_check`, `retry_note`, and `profile_note` as `None`
-— `suggest_outfit` is never called with empty input, and `rank_by_profile` never runs on an
-empty list. A *recoverable* near-miss instead (e.g. an in-stock tee
+`outfit_suggestion`, `fit_card`, `price_check`, `trend_check`, `retry_note`, and
+`profile_note` as `None` — `suggest_outfit` is never called with empty input, and neither
+`rank_by_profile` nor `check_trends` runs on an empty list. A *recoverable* near-miss instead (e.g. an in-stock tee
 in the wrong size) would surface via `retry_note` rather than the error.
