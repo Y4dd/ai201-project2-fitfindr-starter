@@ -129,7 +129,10 @@ planning-loop enhancement with no new public signature:
   constraints on an ordered ladder and retries before erroring, telling the user exactly
   what it changed. Implemented as one pure, tested helper in `agent.py`:
   `_search_with_fallback(description: str, size: str | None, max_price: float | None) -> tuple[list[dict], str | None]`
-  returning `(results, retry_note)`. Full logic in **Planning Loop**, **State Management**,
+  returning `(results, retry_note)`. The `retry_note` names the loosened filter(s) and the
+  recovered item's real size/price, e.g. *"↔ No exact match — I loosened the size filter to
+  find this. Closest piece: size M, $25."* (or *"…the size and price filters…"* when both were
+  dropped); `None` on an exact match. Full logic in **Planning Loop**, **State Management**,
   **Error Handling**, and **Architecture** below.
 - **Stretch 3 — Style-profile memory** (adds a real 5th tool, `rank_by_profile`, plus
   agent-owned persistence helpers). A profile of the user's taste persists across runs in
@@ -458,7 +461,7 @@ For each tool, describe the specific failure mode you're handling and what the a
 
 | Tool | Failure mode | Agent response |
 |------|-------------|----------------|
-| search_listings | No results match the query | Tool returns `[]` (no raise). **Stretch 1:** the loop first runs the relaxation ladder (drop size → drop size + price) via `_search_with_fallback`. If a relaxed attempt recovers results, the loop continues on the off-spec item and surfaces `retry_note`. Only if **every** applicable attempt is empty does it set `session["error"]` — reworded to admit the loosening was tried: *"I couldn't find anything matching 'designer ballgown', even after removing the size and price filters. Try broader terms like 'dress'."* — and return early without calling the later tools. |
+| search_listings | No results match the query | Tool returns `[]` (no raise). **Stretch 1:** the loop first runs the relaxation ladder (drop size → drop size + price) via `_search_with_fallback`. If a relaxed attempt recovers results, the loop continues on the off-spec item and surfaces `retry_note`. Only if **every** applicable attempt is empty does it set `session["error"]` — reworded to admit the loosening was tried while still echoing the original filters: *"I couldn't find any listings matching 'designer ballgown' in size XXS under $5 — even after dropping the size and price filters. Try broader search terms (e.g. 'dress')."* — and return early without calling the later tools. |
 | planning loop (retry, Stretch 1) | Initial search empty, but a looser search could match | Don't error immediately: relax on the ordered ladder (size → price), keep the first non-empty result as `selected_item`, and set `retry_note` naming the dropped filter(s) + the item's real size/price. Errors only if the fully-relaxed search is still empty (see the `search_listings` row). Never drops `description`; never calls `suggest_outfit` on empty input. |
 | suggest_outfit | Wardrobe is empty | Detects `wardrobe["items"] == []` and returns **general** styling advice for the item (silhouettes, colors, vibe) instead of named pieces — a useful non-empty string, never a crash. (A network/LLM error is also caught and returns a graceful fallback string.) |
 | create_fit_card | Outfit input is missing or incomplete | Detects empty/whitespace `outfit` and returns a descriptive error string (*"⚠️ No outfit to write up yet — run a search that finds an item first."*) instead of raising. |

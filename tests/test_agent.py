@@ -80,6 +80,7 @@ def test_run_agent_happy_path_fills_full_session(monkeypatch):
     assert session["parsed"]["max_price"] == 30.0
     assert session["selected_item"]["id"] == "lst_002"
     assert session["search_results"][0]["id"] == "lst_002"
+    assert session["retry_note"] is None   # exact match — nothing was loosened
     assert isinstance(session["outfit_suggestion"], str) and session["outfit_suggestion"]
     assert isinstance(session["fit_card"], str) and session["fit_card"]
 
@@ -102,6 +103,7 @@ def test_run_agent_no_results_sets_error_and_skips_generative_tools(monkeypatch)
 
     assert session["search_results"] == []
     assert isinstance(session["error"], str) and session["error"].strip()
+    assert session["retry_note"] is None   # the ladder fully failed — no recovery note
     assert session["selected_item"] is None
     assert session["outfit_suggestion"] is None
     assert session["fit_card"] is None
@@ -156,3 +158,79 @@ def test_run_agent_uses_llm_fallback_when_regex_finds_no_description(monkeypatch
     session = agent.run_agent("size M under $30", _EXAMPLE_WARDROBE)
     assert session["parsed"]["description"] == "vintage graphic tee"
     assert session["selected_item"]["id"] == "lst_002"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stretch 1: _search_with_fallback — the ordered relaxation ladder
+# (pure / deterministic — exercises the real search_listings over the real dataset)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_fallback_exact_match_returns_no_note():
+    """Attempt 0 hits, so nothing is relaxed and retry_note stays None."""
+    results, note = agent._search_with_fallback("vintage graphic tee", "M", 30.0)
+    assert results and results[0]["id"] == "lst_002"
+    assert note is None
+
+
+def test_fallback_recovers_by_dropping_size():
+    """No size-L argyle vest exists, so the ladder drops the size filter and recovers
+    the size-M one (lst_030). The note names the loosened 'size' and the item's real
+    price."""
+    results, note = agent._search_with_fallback("argyle knit vest", "L", None)
+    assert results and results[0]["id"] == "lst_030"
+    assert note is not None
+    assert "size" in note.lower()
+    assert "$25" in note            # the recovered item's real price
+
+
+def test_fallback_recovers_by_dropping_price():
+    """With no size set, attempt 1 (drop size) is a no-op and is skipped; attempt 2
+    drops the price ceiling and recovers the $44 boots (lst_028). Note names 'price'."""
+    results, note = agent._search_with_fallback("suede chelsea boots", None, 30.0)
+    assert results and results[0]["id"] == "lst_028"
+    assert note is not None
+    assert "price" in note.lower()
+    assert "$44" in note
+
+
+def test_fallback_recovers_by_dropping_size_and_price():
+    """Canonical full ladder: attempts 0 and 1 are both empty, so attempt 2 drops BOTH
+    size and price and recovers lst_036; the note names both loosened filters."""
+    results, note = agent._search_with_fallback("velvet blazer", "M", 30.0)
+    assert results and results[0]["id"] == "lst_036"
+    assert note is not None
+    assert "size" in note.lower() and "price" in note.lower()
+
+
+def test_fallback_unrecoverable_returns_empty_and_none():
+    """REQUIRED failure mode: when every applicable attempt is empty, the helper
+    returns ([], None) — it never raises and never fabricates a note."""
+    results, note = agent._search_with_fallback("designer ballgown", "XXS", 5.0)
+    assert results == []
+    assert note is None
+
+
+def test_fallback_with_no_filters_has_nothing_to_relax():
+    """No size and no price means there is nothing to loosen — an empty attempt 0 is
+    final, returning ([], None) without crashing on the skipped attempts."""
+    results, note = agent._search_with_fallback("designer ballgown", None, None)
+    assert results == []
+    assert note is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stretch 1: run_agent wires the ladder — a recovered near-miss runs to completion
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_run_agent_recovered_search_sets_retry_note_and_completes(monkeypatch):
+    """A near-miss (a size-L vest that only exists in M) is recovered by the ladder:
+    run_agent stores retry_note, selects the off-spec item, and still runs the
+    generative tools all the way to a fit card."""
+    monkeypatch.setattr(tools, "_get_groq_client", lambda: _fake_groq_client("styled!"))
+
+    session = agent.run_agent("argyle knit vest size L", _EXAMPLE_WARDROBE)
+
+    assert session["error"] is None
+    assert session["selected_item"]["id"] == "lst_030"
+    assert isinstance(session["retry_note"], str) and session["retry_note"].strip()
+    assert session["fit_card"]

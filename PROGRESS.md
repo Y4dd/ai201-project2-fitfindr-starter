@@ -117,10 +117,25 @@
   **New dependency: `pytrends`** (archived/unofficial — fine for light use; document in README).
   Live `trending` varies run-to-run, so the walkthrough is illustrative; the chosen graceful-
   "unavailable" path (no dataset fallback) means the demo is best recorded on a live hit.
-- **NEXT: SI1 — implement retry-logic-with-fallback** (planning phase COMPLETE — all four
-  stretch features specced). New session after `/clear`; TDD + a failure-mode test each, one
-  feature per session (SI1 → SI2 → SI3 → SI4), `/clear` between, then **M6** (README + run app
-  + 3–5 min demo). Note: SI4 will need `pip install pytrends` and a `_fetch_trend_ranking` seam.
+- **SI1 (implement retry-logic-with-fallback): DONE** — built test-first (TDD). New pure helper
+  `_search_with_fallback(description, size, max_price) -> tuple[list[dict], str | None]` in
+  `agent.py` runs the ordered relaxation ladder (attempt 0 exact → drop size → drop size+price),
+  skips no-op attempts, never drops `description`, and returns the first non-empty result set with
+  a `retry_note`; returns `([], None)` when unrecoverable (never raises — delegates to
+  `search_listings`). Note wording (user-approved): *"↔ No exact match — I loosened the size [and
+  price] filter(s) to find this. Closest piece: size M, $25."* via `_retry_note(...)`. `run_agent`
+  stores `retry_note` in the session (new field) and `_no_results_message` now admits the loosening
+  was tried while still echoing the original filters. `app.py` prepends the note as a banner above
+  the listing (reads `session.get("retry_note")`). **Tests (+8, suite now 30 green):** 6 ladder
+  unit tests over the real dataset (exact→no note, drop-size, drop-price, drop-both, **unrecoverable
+  `([], None)` = required failure mode**, no-filters-to-relax), a recovered-`run_agent` integration
+  test, an `app.py` banner test, plus `retry_note` assertions added to the happy-path & no-results
+  tests. Live smoke confirmed all three paths (drop-size → lst_030, drop-price → lst_028,
+  unrecoverable → error) and that the generative tools still run on a recovered off-spec item.
+- **NEXT: SI2 — implement price-comparison tool** (`compare_price`, Tool 4 spec in `planning.md`).
+  New session after `/clear`; TDD + a failure-mode test (accessories item → `insufficient_data`),
+  one feature per session (SI2 → SI3 → SI4), `/clear` between, then **M6** (README + run app +
+  3–5 min demo). Note: SI4 will need `pip install pytrends` and a `_fetch_trend_ranking` seam.
 
 ## Milestone checklist
 
@@ -138,7 +153,7 @@
 - [x] SP4 — Plan trend awareness
 
 **Stretch — IMPLEMENTATION phase** (one feature per session, `/clear` between; TDD + failure-mode test each):
-- [ ] SI1 — Implement retry logic w/ fallback
+- [x] SI1 — Implement retry logic w/ fallback
 - [ ] SI2 — Implement price-comparison tool
 - [ ] SI3 — Implement style-profile memory
 - [ ] SI4 — Implement trend awareness
@@ -149,11 +164,14 @@
 
 - `tools.py`: all 3 tools implemented (search pure; `suggest_outfit`/`create_fit_card` call
   Groq `llama-3.3-70b-versatile`, each wrapped in try/except → graceful fallback strings).
-- `tests/` (22 passing): `test_tools.py` (9) + `test_agent.py` (9) + `test_app.py` (4),
-  all mocking `tools._get_groq_client`. `pytest.ini` (`pythonpath = .`, testpaths `tests`,
-  filters the groq/pydantic-on-3.14 warning). Run with `pytest` from the project root.
-- `agent.py`: `run_agent` (conditional loop) + `_parse_query` / `_llm_parse_query` /
-  `_no_results_message` helpers done. `app.py`: `handle_query` + `_format_listing` done.
+- `tests/` (30 passing): `test_tools.py` (9) + `test_agent.py` (17) + `test_app.py` (5),
+  all mocking `tools._get_groq_client` (the ladder unit tests are zero-mock — pure over the real
+  dataset). `pytest.ini` (`pythonpath = .`, testpaths `tests`, filters the groq/pydantic-on-3.14
+  warning). Run with `pytest` from the project root.
+- `agent.py`: `run_agent` (conditional loop + Stretch 1 ladder) + `_parse_query` /
+  `_llm_parse_query` / `_no_results_message` / `_search_with_fallback` / `_retry_note` helpers
+  done; session has a `retry_note` field. `app.py`: `handle_query` (prepends the retry banner) +
+  `_format_listing` done.
 - Data + `utils/data_loader.py` in place. `README.md` is still the starter template (full
   README w/ tool signatures is an M6 deliverable; signatures already match planning.md).
 

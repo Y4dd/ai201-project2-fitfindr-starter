@@ -83,3 +83,29 @@ def test_handle_query_routes_empty_wardrobe_choice(monkeypatch):
     monkeypatch.setattr(app, "run_agent", spy_run_agent)
     app.handle_query("anything", "Empty wardrobe (new user)")
     assert captured["wardrobe"] == get_empty_wardrobe()
+
+
+def test_handle_query_prepends_retry_banner_above_listing(monkeypatch):
+    """Stretch 1: when the agent recovered via the retry ladder, handle_query shows
+    the retry_note as a banner ABOVE the formatted listing."""
+    note = "↔ test retry note — loosened the size filter"
+
+    def stub_run_agent(query, wardrobe):
+        return {
+            "error": None,
+            "retry_note": note,
+            "selected_item": {
+                "title": "Vintage Knit Vest", "price": 25.0, "condition": "good",
+                "platform": "depop", "size": "M", "brand": None,
+                "colors": ["brown"], "style_tags": ["argyle"],
+                "description": "d", "id": "lst_030",
+            },
+            "outfit_suggestion": "o",
+            "fit_card": "f",
+        }
+
+    monkeypatch.setattr(app, "run_agent", stub_run_agent)
+    listing, outfit, fit = app.handle_query("argyle knit vest size L", "Example wardrobe")
+    assert note in listing
+    assert listing.index(note) < listing.index("Vintage Knit Vest")  # banner sits above
+    assert outfit == "o" and fit == "f"

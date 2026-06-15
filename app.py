@@ -62,7 +62,12 @@ def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str]:
         return session["error"], "", ""
 
     # 5. A match: format the listing and hand the two generated strings to their panels.
+    #    Stretch 1 — if the retry ladder loosened a filter to find this off-spec item,
+    #    prepend its note as a banner above the listing so the user knows why.
     listing_text = _format_listing(session["selected_item"])
+    retry_note = session.get("retry_note")
+    if retry_note:
+        listing_text = f"{retry_note}\n\n{listing_text}"
     return listing_text, session["outfit_suggestion"], session["fit_card"]
 
 

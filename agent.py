@@ -148,14 +148,79 @@ def _llm_parse_query(query: str) -> dict | None:
 
 
 def _no_results_message(parsed: dict) -> str:
-    """Actionable error string for the empty-search branch — echoes the filters back."""
+    """Actionable error string for the empty-search branch — echoes the filters back
+    and, when any were set, admits the retry ladder already tried loosening them
+    (Stretch 1) so the message doesn't suggest a fix we silently attempted."""
     msg = f"I couldn't find any listings matching '{parsed['description']}'"
     if parsed["size"]:
         msg += f" in size {parsed['size']}"
     if parsed["max_price"] is not None:
         msg += f" under ${parsed['max_price']:g}"
-    msg += ". Try removing the size filter, raising your budget, or using broader search terms."
+
+    relaxed = [name for name, on in
+               (("size", parsed["size"]), ("price", parsed["max_price"] is not None)) if on]
+    if relaxed:
+        noun = "filter" if len(relaxed) == 1 else "filters"
+        msg += f" — even after dropping the {' and '.join(relaxed)} {noun}"
+
+    msg += ". Try broader search terms (e.g. 'dress')."
     return msg
+
+
+# ── retry ladder (Stretch 1) ──────────────────────────────────────────────────
+
+def _retry_note(item: dict, *, dropped_size: bool, dropped_price: bool) -> str:
+    """Banner text for a recovered (off-spec) search: name the filter(s) the ladder
+    loosened and the surfaced item's real size/price, so the user understands why an
+    off-spec piece is being shown. (Wording is a UI/error-copy choice — tests assert
+    the contract, i.e. that the dropped filter name + the item's size/price appear.)"""
+    relaxed = [name for name, on in
+               (("size", dropped_size), ("price", dropped_price)) if on]
+    noun = "filter" if len(relaxed) == 1 else "filters"
+    return (
+        f"↔ No exact match — I loosened the {' and '.join(relaxed)} {noun} to find this. "
+        f"Closest piece: size {item['size']}, ${item['price']:g}."
+    )
+
+
+def _search_with_fallback(
+    description: str, size: str | None, max_price: float | None
+) -> tuple[list[dict], str | None]:
+    """Stretch 1 — ordered relaxation ladder. Return ``(results, retry_note)``.
+
+    Runs `search_listings` on a ladder of progressively looser filters and returns
+    the first non-empty result set, along with a note describing what was loosened:
+
+      - **Attempt 0 (exact):** the query as given. A hit here ⇒ ``retry_note = None``.
+      - **Attempt 1 (drop size):** only if a `size` was set.
+      - **Attempt 2 (drop size + price):** only if a `max_price` was set.
+
+    No-op attempts (nothing to relax) are skipped, and `description` is never dropped.
+    If every applicable attempt is empty, return ``([], None)``. Pure and never raises
+    (delegates entirely to `search_listings`, which never raises).
+    """
+    # Attempt 0 — exact match wins outright, no note.
+    results = search_listings(description, size, max_price)
+    if results:
+        return results, None
+
+    # Attempt 1 — drop the size filter (skip if there was no size to drop).
+    if size is not None:
+        results = search_listings(description, None, max_price)
+        if results:
+            return results, _retry_note(results[0], dropped_size=True, dropped_price=False)
+
+    # Attempt 2 — drop size + price (skip if there was no price to drop). Only the
+    # filters the user actually set count as "loosened" in the note.
+    if max_price is not None:
+        results = search_listings(description, None, None)
+        if results:
+            return results, _retry_note(
+                results[0], dropped_size=size is not None, dropped_price=True
+            )
+
+    # Nothing left to relax and still empty.
+    return [], None
 
 
 # ── session state ─────────────────────────────────────────────────────────────
@@ -174,6 +239,7 @@ def _new_session(query: str, wardrobe: dict) -> dict:
         "query": query,              # original user query
         "parsed": {},                # extracted description / size / max_price
         "search_results": [],        # list of matching listing dicts
+        "retry_note": None,          # Stretch 1: set when the ladder loosened a filter
         "selected_item": None,       # top result, passed into suggest_outfit
         "wardrobe": wardrobe,        # user's wardrobe dict
         "outfit_suggestion": None,   # string returned by suggest_outfit
@@ -248,12 +314,16 @@ def run_agent(query: str, wardrobe: dict) -> dict:
         parsed["description"] = query.strip()
     session["parsed"] = parsed
 
-    # Step 3 — search (the only tool that touches the dataset).
-    session["search_results"] = search_listings(
+    # Step 3 — search with fallback (Stretch 1): exact, then relax size, then size+price.
+    # _search_with_fallback returns the first non-empty result set plus a retry_note
+    # naming what (if anything) it had to loosen to find a match.
+    results, retry_note = _search_with_fallback(
         parsed["description"], parsed["size"], parsed["max_price"]
     )
+    session["search_results"] = results
+    session["retry_note"] = retry_note
 
-    # Step 4 — the conditional branch: no matches => set an error and stop here.
+    # Step 4 — the conditional branch: nothing even after loosening => error and stop.
     # suggest_outfit is never called with empty input.
     if not session["search_results"]:
         session["error"] = _no_results_message(parsed)
