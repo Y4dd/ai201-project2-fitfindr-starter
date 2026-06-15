@@ -234,3 +234,32 @@ def test_run_agent_recovered_search_sets_retry_note_and_completes(monkeypatch):
     assert session["selected_item"]["id"] == "lst_030"
     assert isinstance(session["retry_note"], str) and session["retry_note"].strip()
     assert session["fit_card"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stretch 2: run_agent wires the price check — a successful search stores a verdict
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_run_agent_happy_path_runs_price_check(monkeypatch):
+    """A successful search stores a compare_price result in session['price_check'].
+    The $18 Y2K tee (lst_002) reads as a great_deal against the other tops."""
+    monkeypatch.setattr(tools, "_get_groq_client", lambda: _fake_groq_client("styled!"))
+
+    session = agent.run_agent("vintage graphic tee under $30, size M", _EXAMPLE_WARDROBE)
+
+    assert session["selected_item"]["id"] == "lst_002"
+    assert session["price_check"] is not None
+    assert session["price_check"]["band"] == "great_deal"
+    assert session["price_check"]["n_comparables"] == 14
+
+
+def test_run_agent_no_results_leaves_price_check_none(monkeypatch):
+    """The price check is a post-selection step, so the no-results error path never
+    runs it — price_check stays None alongside the other downstream fields."""
+    monkeypatch.setattr(agent, "suggest_outfit", lambda *a, **k: "unused")
+    monkeypatch.setattr(agent, "create_fit_card", lambda *a, **k: "unused")
+
+    session = agent.run_agent("designer ballgown size XXS under $5", _EXAMPLE_WARDROBE)
+
+    assert session["error"]
+    assert session["price_check"] is None

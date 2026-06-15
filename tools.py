@@ -14,6 +14,7 @@ Tools:
 
 import os
 import re
+import statistics
 import warnings
 
 from dotenv import load_dotenv
@@ -255,3 +256,94 @@ def create_fit_card(outfit: str, new_item: dict) -> str:
         f"Thrifted the {new_item['title']} for ${new_item['price']} on "
         f"{new_item['platform']} and styled it up — {outfit}. Obsessed. 🫶"
     )
+
+
+# ── Tool 4: compare_price (Stretch 2) ─────────────────────────────────────────
+
+# Verdict templates per band (wording locked in planning.md). Prices use :g so a
+# whole-dollar float renders without the trailing ".0" (18.0 -> "18", 21.5 -> "21.5").
+_PRICE_VERDICTS = {
+    "great_deal": "💰 Great deal — ${price:g} is below the ${median:g} median for "
+                  "{category} ({n} comparable listings).",
+    "fair": "💰 Fair price — ${price:g} sits near the ${median:g} median for "
+            "{category} ({n} comparable listings).",
+    "high": "💰 Priced high — ${price:g} is above the ${median:g} median for "
+            "{category} ({n} comparable listings).",
+}
+
+
+def compare_price(new_item: dict, comparables: list[dict]) -> dict:
+    """
+    Judge whether new_item's asking price is a good deal versus same-category peers.
+
+    Pure and deterministic — no LLM, no filesystem. run_agent passes the full dataset
+    (load_listings()) as `comparables`; the tool self-selects the peer group, so it can
+    also be called standalone in tests with any list of listing dicts.
+
+    Args:
+        new_item:    The listing being judged. Reads its category, price, and id.
+        comparables: Candidate listings to compare against. The tool narrows these to
+                     same-category peers, excluding new_item itself by id.
+
+    Returns:
+        A dict with six keys:
+            band          — "great_deal" | "fair" | "high" | "insufficient_data"
+            verdict       — a human-readable sentence built from the numbers
+            price         — new_item's price (float)
+            median        — median peer price (float), or None when insufficient
+            n_comparables — number of same-category peers used (int)
+            category      — new_item's category (str)
+
+    Banding (see planning.md, Tool 4): percentile = share of peers priced strictly
+    below new_item; <= 25 -> great_deal, > 75 -> high, else fair.
+
+    Failure mode: fewer than 3 same-category peers (e.g. any accessories item, which
+    has only 2 peers in our data) -> band="insufficient_data", median=None. Never raises.
+    """
+    category = new_item["category"]
+    price = new_item["price"]
+    item_id = new_item.get("id")
+
+    # Peer group: same category, excluding the item itself by id.
+    peers = [
+        c for c in comparables
+        if c["category"] == category and c.get("id") != item_id
+    ]
+    n = len(peers)
+
+    # Guard: too few peers to judge — graceful insufficient_data (never raises).
+    if n < 3:
+        return {
+            "band": "insufficient_data",
+            "verdict": (
+                f"💰 Not enough comparable {category} listings to judge this "
+                f"price (only {n} found)."
+            ),
+            "price": price,
+            "median": None,
+            "n_comparables": n,
+            "category": category,
+        }
+
+    prices = [c["price"] for c in peers]
+    median = statistics.median(prices)
+    percentile = 100 * sum(1 for p in prices if p < price) / n
+
+    if percentile <= 25:
+        band = "great_deal"
+    elif percentile > 75:
+        band = "high"
+    else:
+        band = "fair"
+
+    verdict = _PRICE_VERDICTS[band].format(
+        price=price, median=median, category=category, n=n
+    )
+    return {
+        "band": band,
+        "verdict": verdict,
+        "price": price,
+        "median": median,
+        "n_comparables": n,
+        "category": category,
+    }

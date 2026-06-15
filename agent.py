@@ -22,7 +22,8 @@ import json
 import re
 
 import tools
-from tools import search_listings, suggest_outfit, create_fit_card
+from tools import search_listings, suggest_outfit, create_fit_card, compare_price
+from utils.data_loader import load_listings
 
 
 # ── query parsing (hybrid: regex → LLM fallback → raw query) ───────────────────
@@ -241,6 +242,7 @@ def _new_session(query: str, wardrobe: dict) -> dict:
         "search_results": [],        # list of matching listing dicts
         "retry_note": None,          # Stretch 1: set when the ladder loosened a filter
         "selected_item": None,       # top result, passed into suggest_outfit
+        "price_check": None,         # Stretch 2: compare_price verdict dict (None on error path)
         "wardrobe": wardrobe,        # user's wardrobe dict
         "outfit_suggestion": None,   # string returned by suggest_outfit
         "fit_card": None,            # string returned by create_fit_card
@@ -329,9 +331,16 @@ def run_agent(query: str, wardrobe: dict) -> dict:
         session["error"] = _no_results_message(parsed)
         return session
 
-    # Steps 5–7 — a match: style it, caption it, return the filled session.
+    # A match — select the top item.
     selected = session["search_results"][0]
     session["selected_item"] = selected
+
+    # Step 7 (Stretch 2) — price check: an added, non-branching step. The agent owns the
+    # data read (load_listings) and passes it in; compare_price stays pure and never gates
+    # control flow, so it can't block the generative tools below.
+    session["price_check"] = compare_price(selected, load_listings())
+
+    # Steps 9–10 — style it, caption it, return the filled session.
     session["outfit_suggestion"] = suggest_outfit(selected, wardrobe)
     session["fit_card"] = create_fit_card(session["outfit_suggestion"], selected)
     return session

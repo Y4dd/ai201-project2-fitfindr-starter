@@ -20,7 +20,7 @@ from utils.data_loader import get_example_wardrobe, get_empty_wardrobe
 
 # ── query handler ─────────────────────────────────────────────────────────────
 
-def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str]:
+def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str, str]:
     """
     Called by Gradio when the user submits a query.
 
@@ -29,23 +29,14 @@ def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str]:
         wardrobe_choice: Either "Example wardrobe" or "Empty wardrobe (new user)".
 
     Returns:
-        A tuple of three strings:
-            (listing_text, outfit_suggestion, fit_card)
-        Each string maps to one of the three output panels in the UI.
-
-    TODO:
-        1. Guard against an empty query (return early with an error message).
-        2. Select the wardrobe based on wardrobe_choice.
-        3. Call run_agent() with the query and selected wardrobe.
-        4. If session["error"] is set, return the error in the first panel
-           and empty strings for the other two.
-        5. Otherwise, format session["selected_item"] into a readable listing_text
-           string and return it along with session["outfit_suggestion"] and
-           session["fit_card"].
+        A tuple of four strings:
+            (listing_text, price_check, outfit_suggestion, fit_card)
+        Each string maps to one of the four output panels in the UI. The price-check
+        panel (Stretch 2) sits between the listing and the outfit.
     """
     # 1. Guard an empty query — don't bother the agent.
     if not user_query or not user_query.strip():
-        return "Type what you're looking for to get started — e.g. 'vintage graphic tee under $30, size M'.", "", ""
+        return "Type what you're looking for to get started — e.g. 'vintage graphic tee under $30, size M'.", "", "", ""
 
     # 2. Pick the wardrobe the user selected.
     wardrobe = (
@@ -57,18 +48,23 @@ def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str]:
     # 3. Run the planning loop — the session dict is the single source of truth.
     session = run_agent(user_query, wardrobe)
 
-    # 4. No match: show the error in the listing panel, leave the other two blank.
+    # 4. No match: show the error in the listing panel, leave the other three blank.
     if session["error"]:
-        return session["error"], "", ""
+        return session["error"], "", "", ""
 
-    # 5. A match: format the listing and hand the two generated strings to their panels.
+    # 5. A match: format the listing and hand the generated strings to their panels.
     #    Stretch 1 — if the retry ladder loosened a filter to find this off-spec item,
     #    prepend its note as a banner above the listing so the user knows why.
     listing_text = _format_listing(session["selected_item"])
     retry_note = session.get("retry_note")
     if retry_note:
         listing_text = f"{retry_note}\n\n{listing_text}"
-    return listing_text, session["outfit_suggestion"], session["fit_card"]
+
+    # Stretch 2 — the price-check verdict goes in its own panel (empty if unavailable).
+    price_check = session.get("price_check")
+    price_text = price_check["verdict"] if price_check else ""
+
+    return listing_text, price_text, session["outfit_suggestion"], session["fit_card"]
 
 
 def _format_listing(item: dict) -> str:
@@ -120,6 +116,11 @@ Describe what you're looking for — include size and price if you want to filte
                 lines=8,
                 interactive=False,
             )
+            price_output = gr.Textbox(
+                label="💰 Price check",
+                lines=8,
+                interactive=False,
+            )
             outfit_output = gr.Textbox(
                 label="👗 Outfit idea",
                 lines=8,
@@ -140,12 +141,12 @@ Describe what you're looking for — include size and price if you want to filte
         submit_btn.click(
             fn=handle_query,
             inputs=[query_input, wardrobe_choice],
-            outputs=[listing_output, outfit_output, fitcard_output],
+            outputs=[listing_output, price_output, outfit_output, fitcard_output],
         )
         query_input.submit(
             fn=handle_query,
             inputs=[query_input, wardrobe_choice],
-            outputs=[listing_output, outfit_output, fitcard_output],
+            outputs=[listing_output, price_output, outfit_output, fitcard_output],
         )
 
     return demo

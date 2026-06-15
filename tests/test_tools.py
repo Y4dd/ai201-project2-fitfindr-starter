@@ -157,3 +157,106 @@ def test_create_fit_card_uses_high_temp_and_item_details(monkeypatch):
     assert _ITEM["title"].lower() in prompt
     assert str(_ITEM["price"]) in prompt
     assert _ITEM["platform"].lower() in prompt
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Tool 4: compare_price  (Stretch 2 — pure / deterministic, no LLM, zero-mock)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _priced(id: str, category: str, price: float) -> dict:
+    """Minimal listing stub — compare_price only reads id, category, and price."""
+    return {"id": id, "category": category, "price": price}
+
+
+def test_compare_price_insufficient_data_for_accessories():
+    """REQUIRED failure mode: an accessories item has only 2 same-category peers in
+    our data (3 accessories minus itself), so compare_price returns the
+    insufficient_data band with median None — it never raises and never guesses."""
+    belt = next(i for i in load_listings() if i["id"] == "lst_014")  # accessories
+    result = tools.compare_price(belt, load_listings())
+
+    assert result["band"] == "insufficient_data"
+    assert result["median"] is None
+    assert result["n_comparables"] == 2
+    assert result["price"] == belt["price"]
+    assert result["category"] == "accessories"
+    assert isinstance(result["verdict"], str) and result["verdict"].strip()
+
+
+def test_compare_price_great_deal_band():
+    """Item priced at/below the 25th percentile of its peers → great_deal."""
+    item = _priced("x", "tops", 10.0)
+    peers = [_priced("a", "tops", 20.0), _priced("b", "tops", 30.0),
+             _priced("c", "tops", 40.0), _priced("d", "tops", 50.0)]
+    result = tools.compare_price(item, peers)
+
+    assert result["band"] == "great_deal"
+    assert result["median"] == 35.0
+    assert result["n_comparables"] == 4
+
+
+def test_compare_price_fair_band():
+    """Item priced mid-range (25th–75th percentile) → fair."""
+    item = _priced("x", "tops", 30.0)
+    peers = [_priced("a", "tops", 10.0), _priced("b", "tops", 20.0),
+             _priced("c", "tops", 40.0), _priced("d", "tops", 50.0)]
+    result = tools.compare_price(item, peers)
+
+    assert result["band"] == "fair"
+    assert result["median"] == 30.0
+
+
+def test_compare_price_high_band():
+    """Item priced above the 75th percentile of its peers → high."""
+    item = _priced("x", "tops", 60.0)
+    peers = [_priced("a", "tops", 10.0), _priced("b", "tops", 20.0),
+             _priced("c", "tops", 30.0), _priced("d", "tops", 40.0)]
+    result = tools.compare_price(item, peers)
+
+    assert result["band"] == "high"
+    assert result["median"] == 25.0
+
+
+def test_compare_price_excludes_item_from_its_own_peer_group():
+    """The item must not be compared against itself: a same-id copy in `comparables`
+    is dropped, so neither n_comparables nor the median counts the item's price."""
+    item = _priced("x", "tops", 1000.0)
+    comparables = [
+        _priced("x", "tops", 1000.0),   # the item itself — must be excluded by id
+        _priced("a", "tops", 10.0),
+        _priced("b", "tops", 20.0),
+        _priced("c", "tops", 30.0),
+    ]
+    result = tools.compare_price(item, comparables)
+
+    assert result["n_comparables"] == 3     # the duplicate is gone
+    assert result["median"] == 20.0         # not 25.0 (which would include the 1000)
+
+
+def test_compare_price_only_compares_same_category():
+    """Peers in other categories are ignored — only same-category listings count."""
+    item = _priced("x", "tops", 10.0)
+    comparables = [
+        _priced("a", "tops", 20.0),
+        _priced("b", "tops", 30.0),
+        _priced("c", "tops", 40.0),
+        _priced("d", "bottoms", 1.0),   # different category — ignored
+        _priced("e", "shoes", 2.0),
+    ]
+    result = tools.compare_price(item, comparables)
+
+    assert result["category"] == "tops"
+    assert result["n_comparables"] == 3
+
+
+def test_compare_price_anchor_numbers_match_spec():
+    """The planning.md headline example is real: the $18 Y2K tee (lst_002) reads as a
+    great_deal against the 14 other tops (median $21.50)."""
+    tee = next(i for i in load_listings() if i["id"] == "lst_002")
+    result = tools.compare_price(tee, load_listings())
+
+    assert result["band"] == "great_deal"
+    assert result["n_comparables"] == 14
+    assert result["median"] == 21.5
+    assert "21.5" in result["verdict"]
+    assert "tops" in result["verdict"]

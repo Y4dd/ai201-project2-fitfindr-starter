@@ -132,10 +132,30 @@
   test, an `app.py` banner test, plus `retry_note` assertions added to the happy-path & no-results
   tests. Live smoke confirmed all three paths (drop-size → lst_030, drop-price → lst_028,
   unrecoverable → error) and that the generative tools still run on a recovered off-spec item.
-- **NEXT: SI2 — implement price-comparison tool** (`compare_price`, Tool 4 spec in `planning.md`).
-  New session after `/clear`; TDD + a failure-mode test (accessories item → `insufficient_data`),
-  one feature per session (SI2 → SI3 → SI4), `/clear` between, then **M6** (README + run app +
-  3–5 min demo). Note: SI4 will need `pip install pytrends` and a `_fetch_trend_ranking` seam.
+- **SI2 (implement price-comparison tool): DONE** — built test-first (TDD). New pure,
+  deterministic tool `compare_price(new_item, comparables) -> dict` in `tools.py`: self-selects
+  same-category peers (excluding the item by `id`), guards `n < 3` → `insufficient_data`
+  (`median=None`), else computes `median` + percentile (share of peers priced strictly below the
+  item) and bands ≤25 `great_deal` / >75 `high` / else `fair`; returns the 6-key dict
+  `{band, verdict, price, median, n_comparables, category}` with the verdict wording locked in
+  planning.md (prices rendered via `:g`). `run_agent` runs it as an added, **non-branching** step
+  right after selection — `session["price_check"] = compare_price(selected, load_listings())` (the
+  agent owns the `load_listings()` read; the tool stays pure) — and stores the dict in the new
+  `price_check` session field (None on the error path). `app.py` gained a dedicated **4th
+  "💰 Price check" panel** between the listing and the outfit; `handle_query` now returns a 4-tuple
+  and both Gradio events wire the new output. **Tests (+10, suite now 40 green):** 7 zero-mock tool
+  tests (**required failure mode** = a real accessories item → `insufficient_data`; one test per
+  band on small fixtures; item-excluded-from-its-own-peers; same-category-only; and a real-dataset
+  anchor — lst_002 → `great_deal`, median $21.5, 14 peers), 2 agent wiring tests (happy path stores
+  `great_deal`; no-results leaves `price_check` None), and 1 app panel test. Live smoke confirmed all
+  three paths end-to-end: `💰 Great deal — $18 is below the $21.5 median for tops (14 comparable
+  listings).`, the `insufficient_data` belt verdict, and `price_check = None` on the impossible query.
+- **NEXT: SI3 — implement style-profile memory** (`rank_by_profile`, Tool 5 spec in `planning.md`).
+  New session after `/clear`; TDD + a failure-mode test (cold/empty profile → listings returned
+  unchanged), plus agent helpers `_load_profile` / `_update_profile` / `_save_profile` behind a
+  monkeypatchable `PROFILE_PATH` (committed `data/style_profile.json` sample). Then **SI4** (needs
+  `pip install pytrends` + a `_fetch_trend_ranking` seam), then **M6** (README + run app +
+  3–5 min demo).
 
 ## Milestone checklist
 
@@ -154,7 +174,7 @@
 
 **Stretch — IMPLEMENTATION phase** (one feature per session, `/clear` between; TDD + failure-mode test each):
 - [x] SI1 — Implement retry logic w/ fallback
-- [ ] SI2 — Implement price-comparison tool
+- [x] SI2 — Implement price-comparison tool
 - [ ] SI3 — Implement style-profile memory
 - [ ] SI4 — Implement trend awareness
 
@@ -162,16 +182,22 @@
 
 ## Repo state
 
-- `tools.py`: all 3 tools implemented (search pure; `suggest_outfit`/`create_fit_card` call
-  Groq `llama-3.3-70b-versatile`, each wrapped in try/except → graceful fallback strings).
-- `tests/` (30 passing): `test_tools.py` (9) + `test_agent.py` (17) + `test_app.py` (5),
-  all mocking `tools._get_groq_client` (the ladder unit tests are zero-mock — pure over the real
-  dataset). `pytest.ini` (`pythonpath = .`, testpaths `tests`, filters the groq/pydantic-on-3.14
-  warning). Run with `pytest` from the project root.
-- `agent.py`: `run_agent` (conditional loop + Stretch 1 ladder) + `_parse_query` /
-  `_llm_parse_query` / `_no_results_message` / `_search_with_fallback` / `_retry_note` helpers
-  done; session has a `retry_note` field. `app.py`: `handle_query` (prepends the retry banner) +
-  `_format_listing` done.
+- `tools.py`: 4 tools implemented — `search_listings` + `compare_price` are pure/deterministic;
+  `suggest_outfit`/`create_fit_card` call Groq `llama-3.3-70b-versatile`, each wrapped in
+  try/except → graceful fallback strings. `compare_price` (Stretch 2) bands a price vs same-category
+  peers; verdict templates in `_PRICE_VERDICTS`.
+- `tests/` (40 passing): `test_tools.py` (16) + `test_agent.py` (18) + `test_app.py` (6). The LLM
+  tests mock `tools._get_groq_client`; the ladder + `compare_price` unit tests are zero-mock (pure
+  over the real dataset / small fixtures). `pytest.ini` (`pythonpath = .`, testpaths `tests`, filters
+  the groq/pydantic-on-3.14 warning). Run with `pytest` from the project root. **Gotcha:** collecting
+  `test_app.py` imports gradio, which builds an httpx client against the sandbox's SOCKS proxy and
+  errors at import — run the suite with the **sandbox OFF** (or run `test_tools.py`/`test_agent.py`
+  alone in-sandbox).
+- `agent.py`: `run_agent` (conditional loop + Stretch 1 ladder + Stretch 2 price check) +
+  `_parse_query` / `_llm_parse_query` / `_no_results_message` / `_search_with_fallback` /
+  `_retry_note` helpers done; session has `retry_note` + `price_check` fields. `app.py`:
+  `handle_query` (retry banner + 4th "💰 Price check" panel, returns a 4-tuple) + `_format_listing`
+  done.
 - Data + `utils/data_loader.py` in place. `README.md` is still the starter template (full
   README w/ tool signatures is an M6 deliverable; signatures already match planning.md).
 

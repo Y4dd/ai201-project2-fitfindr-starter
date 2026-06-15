@@ -30,30 +30,32 @@ def _fake_groq_client(content: str = "canned llm text"):
 
 
 def test_handle_query_blank_input_is_guarded():
-    """A blank query short-circuits with a prompt in panel 1 and blank panels 2/3 —
+    """A blank query short-circuits with a prompt in panel 1 and blank panels 2–4 —
     it should not even run the agent."""
-    listing, outfit, fit = app.handle_query("   ", "Example wardrobe")
+    listing, price, outfit, fit = app.handle_query("   ", "Example wardrobe")
     assert listing.strip()          # some 'please enter a query' guidance
+    assert price == ""
     assert outfit == ""
     assert fit == ""
 
 
 def test_handle_query_no_results_shows_error_in_first_panel_only():
-    """The empty-search error goes in the listing panel; the other two stay blank."""
-    listing, outfit, fit = app.handle_query(
+    """The empty-search error goes in the listing panel; the other three stay blank."""
+    listing, price, outfit, fit = app.handle_query(
         "designer ballgown size XXS under $5", "Example wardrobe"
     )
     assert "couldn't find" in listing.lower()
+    assert price == ""
     assert outfit == ""
     assert fit == ""
 
 
 def test_handle_query_happy_path_formats_listing_and_fills_panels(monkeypatch):
     """On a match, panel 1 is a readable listing (title, price, platform) and panels
-    2/3 carry the outfit suggestion and fit card."""
+    3/4 carry the outfit suggestion and fit card."""
     monkeypatch.setattr(tools, "_get_groq_client", lambda: _fake_groq_client("styled!"))
 
-    listing, outfit, fit = app.handle_query(
+    listing, price, outfit, fit = app.handle_query(
         "vintage graphic tee under $30, size M", "Example wardrobe"
     )
     assert "Y2K Baby Tee" in listing
@@ -61,6 +63,19 @@ def test_handle_query_happy_path_formats_listing_and_fills_panels(monkeypatch):
     assert "depop" in listing.lower()
     assert outfit == "styled!"
     assert fit == "styled!"
+
+
+def test_handle_query_shows_price_check_panel(monkeypatch):
+    """Stretch 2: a successful search fills a dedicated price-check panel (panel 2)
+    with the compare_price verdict — the $18 tee reads as a great deal."""
+    monkeypatch.setattr(tools, "_get_groq_client", lambda: _fake_groq_client("styled!"))
+
+    listing, price, outfit, fit = app.handle_query(
+        "vintage graphic tee under $30, size M", "Example wardrobe"
+    )
+    assert "great deal" in price.lower()
+    assert "$18" in price
+    assert outfit == "styled!" and fit == "styled!"
 
 
 def test_handle_query_routes_empty_wardrobe_choice(monkeypatch):
@@ -105,7 +120,7 @@ def test_handle_query_prepends_retry_banner_above_listing(monkeypatch):
         }
 
     monkeypatch.setattr(app, "run_agent", stub_run_agent)
-    listing, outfit, fit = app.handle_query("argyle knit vest size L", "Example wardrobe")
+    listing, price, outfit, fit = app.handle_query("argyle knit vest size L", "Example wardrobe")
     assert note in listing
     assert listing.index(note) < listing.index("Vintage Knit Vest")  # banner sits above
     assert outfit == "o" and fit == "f"
