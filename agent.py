@@ -19,12 +19,14 @@ Usage (once implemented):
 """
 
 import json
+import pathlib
 import re
 
 import tools
 from tools import search_listings, suggest_outfit, create_fit_card, compare_price
 from utils.data_loader import load_listings
 
+PROFILE_PATH = "data/style_profile.json"
 
 # ── query parsing (hybrid: regex → LLM fallback → raw query) ───────────────────
 
@@ -222,6 +224,81 @@ def _search_with_fallback(
 
     # Nothing left to relax and still empty.
     return [], None
+
+
+# ── style-profile helpers (Stretch 3) ────────────────────────────────────────
+
+def _empty_profile() -> dict:
+    return {"style_tags": {}, "colors": {}, "categories": {}, "brands": {},
+            "price_sum": 0.0, "price_count": 0, "runs": 0}
+
+
+def _seed_profile_from_wardrobe(wardrobe: dict) -> dict:
+    """Build a starter profile from the wardrobe so cold-start re-ranking already
+    reflects the user's existing taste rather than being completely neutral."""
+    profile = _empty_profile()
+    for item in wardrobe.get("items", []):
+        for tag in item.get("style_tags", []):
+            profile["style_tags"][tag] = profile["style_tags"].get(tag, 0) + 1
+        for color in item.get("colors", []):
+            profile["colors"][color] = profile["colors"].get(color, 0) + 1
+        cat = item.get("category", "")
+        if cat:
+            profile["categories"][cat] = profile["categories"].get(cat, 0) + 1
+    return profile
+
+
+def _load_profile(wardrobe: dict) -> dict:
+    """Read the style profile from PROFILE_PATH.
+
+    On a missing or corrupt file, seed the profile from the wardrobe (non-empty
+    wardrobe) or return an empty skeleton (empty wardrobe). Never raises.
+    """
+    try:
+        text = pathlib.Path(PROFILE_PATH).read_text(encoding="utf-8")
+        return json.loads(text)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        if wardrobe.get("items"):
+            return _seed_profile_from_wardrobe(wardrobe)
+        return _empty_profile()
+
+
+def _update_profile(profile: dict, selected_item: dict) -> dict:
+    """Fold the selected listing's signals into the profile and return the updated copy.
+
+    Increments counts for each style_tag, color, category, and (if non-null) brand
+    by 1; accumulates price into price_sum/price_count; bumps runs.
+    """
+    p = json.loads(json.dumps(profile))  # shallow-safe copy via JSON round-trip
+
+    for tag in selected_item.get("style_tags", []):
+        p["style_tags"][tag] = p["style_tags"].get(tag, 0) + 1
+    for color in selected_item.get("colors", []):
+        p["colors"][color] = p["colors"].get(color, 0) + 1
+    cat = selected_item.get("category", "")
+    if cat:
+        p["categories"][cat] = p["categories"].get(cat, 0) + 1
+    brand = selected_item.get("brand") or ""
+    if brand:
+        p["brands"][brand] = p["brands"].get(brand, 0) + 1
+
+    price = selected_item.get("price")
+    if price is not None:
+        p["price_sum"] = p.get("price_sum", 0.0) + float(price)
+        p["price_count"] = p.get("price_count", 0) + 1
+
+    p["runs"] = p.get("runs", 0) + 1
+    return p
+
+
+def _save_profile(profile: dict) -> None:
+    """Write the profile dict to PROFILE_PATH as formatted JSON. Never raises."""
+    try:
+        pathlib.Path(PROFILE_PATH).write_text(
+            json.dumps(profile, indent=2), encoding="utf-8"
+        )
+    except OSError:
+        pass
 
 
 # ── session state ─────────────────────────────────────────────────────────────

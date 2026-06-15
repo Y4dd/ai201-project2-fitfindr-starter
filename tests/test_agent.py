@@ -13,6 +13,8 @@ tools._get_groq_client — keeping the suite deterministic and offline.
 Run from the project root:  pytest
 """
 
+import json
+import pathlib
 from types import SimpleNamespace
 
 import agent
@@ -263,3 +265,83 @@ def test_run_agent_no_results_leaves_price_check_none(monkeypatch):
 
     assert session["error"]
     assert session["price_check"] is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stretch 3 helpers: _load_profile, _update_profile, _save_profile
+# (pure over tmp files — no network mocks needed)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_load_profile_missing_file_returns_empty_skeleton(monkeypatch, tmp_path):
+    """REQUIRED: missing data/style_profile.json → empty profile dict, never raises."""
+    monkeypatch.setattr(agent, "PROFILE_PATH", str(tmp_path / "no_such_file.json"))
+    profile = agent._load_profile({})
+    # Must contain all required keys with zero/empty values.
+    assert profile["style_tags"] == {}
+    assert profile["colors"] == {}
+    assert profile["categories"] == {}
+    assert profile["brands"] == {}
+    assert profile["price_sum"] == 0.0
+    assert profile["price_count"] == 0
+    assert profile["runs"] == 0
+
+
+def test_load_profile_corrupt_file_returns_empty_skeleton(monkeypatch, tmp_path):
+    """Corrupt JSON in the profile file → empty profile, never raises."""
+    p = tmp_path / "corrupt.json"
+    p.write_text("not valid json {{{")
+    monkeypatch.setattr(agent, "PROFILE_PATH", str(p))
+    profile = agent._load_profile({})
+    assert profile["style_tags"] == {}
+    assert profile["runs"] == 0
+
+
+def test_load_profile_reads_existing_file(monkeypatch, tmp_path):
+    """When the file exists and is valid, _load_profile returns its contents."""
+    saved = {"style_tags": {"y2k": 3}, "colors": {"white": 2},
+             "categories": {"tops": 5}, "brands": {},
+             "price_sum": 54.0, "price_count": 3, "runs": 3}
+    p = tmp_path / "profile.json"
+    p.write_text(json.dumps(saved))
+    monkeypatch.setattr(agent, "PROFILE_PATH", str(p))
+    profile = agent._load_profile({})
+    assert profile["style_tags"] == {"y2k": 3}
+    assert profile["runs"] == 3
+
+
+def test_update_profile_folds_all_signals():
+    """_update_profile increments tags, colors, category, brand, accumulates price, bumps runs."""
+    profile = {"style_tags": {"y2k": 1}, "colors": {}, "categories": {},
+               "brands": {}, "price_sum": 20.0, "price_count": 1, "runs": 1}
+    item = {
+        "id": "lst_002", "style_tags": ["y2k", "vintage"], "colors": ["white", "pink"],
+        "category": "tops", "brand": None, "price": 18.0,
+    }
+    updated = agent._update_profile(profile, item)
+    # Tags: y2k went from 1 → 2; vintage is new → 1.
+    assert updated["style_tags"]["y2k"] == 2
+    assert updated["style_tags"]["vintage"] == 1
+    # Colors: white and pink added.
+    assert updated["colors"]["white"] == 1
+    assert updated["colors"]["pink"] == 1
+    # Category: tops added.
+    assert updated["categories"]["tops"] == 1
+    # Brand: None → skipped (no brand key added for empty string).
+    assert "" not in updated["brands"] or updated["brands"].get("", 0) == 0
+    # Price accumulated.
+    assert updated["price_sum"] == 38.0
+    assert updated["price_count"] == 2
+    # Runs bumped.
+    assert updated["runs"] == 2
+
+
+def test_save_profile_writes_to_profile_path(monkeypatch, tmp_path):
+    """_save_profile serializes the dict to PROFILE_PATH as valid JSON."""
+    p = tmp_path / "out.json"
+    monkeypatch.setattr(agent, "PROFILE_PATH", str(p))
+    profile = {"style_tags": {"y2k": 2}, "colors": {}, "categories": {},
+               "brands": {}, "price_sum": 18.0, "price_count": 1, "runs": 1}
+    agent._save_profile(profile)
+    loaded = json.loads(p.read_text())
+    assert loaded["style_tags"] == {"y2k": 2}
+    assert loaded["runs"] == 1
