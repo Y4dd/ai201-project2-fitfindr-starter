@@ -345,3 +345,13 @@ def test_save_profile_writes_to_profile_path(monkeypatch, tmp_path):
     loaded = json.loads(p.read_text())
     assert loaded["style_tags"] == {"y2k": 2}
     assert loaded["runs"] == 1
+
+
+def test_load_profile_missing_file_seeds_from_wardrobe(monkeypatch, tmp_path):
+    """Missing file + non-empty wardrobe → seeded profile (not empty skeleton)."""
+    monkeypatch.setattr(agent, "PROFILE_PATH", str(tmp_path / "no_such_file.json"))
+    wardrobe = {"items": [{"style_tags": ["vintage"], "colors": ["blue"], "category": "tops"}]}
+    profile = agent._load_profile(wardrobe)
+    assert profile["style_tags"].get("vintage") == 1
+    assert profile["colors"].get("blue") == 1
+    assert profile["categories"].get("tops") == 1
