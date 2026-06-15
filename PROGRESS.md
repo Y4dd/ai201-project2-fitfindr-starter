@@ -166,10 +166,33 @@
   suite now 54 green.** Live profile accumulates across test runs that don't isolate `PROFILE_PATH`
   (by design — the agent learns), so the committed sample grows with each `pytest` run; this is
   expected behavior.
-- **NEXT: SI4 — implement trend awareness** (`check_trends`, Tool 6 spec in `planning.md`).
-  New session after `/clear`; needs `pip install pytrends` first; TDD with `_fetch_trend_ranking`
-  seam (same pattern as `_get_groq_client`); failure-mode test = mock the seam to raise → `band="unavailable"`.
-  Then **M6** (README + run app + 3–5 min demo).
+- **SI4 (implement trend awareness): DONE** — built test-first (TDD). New tool
+  `check_trends(new_item, listings, size=None) -> dict` in `tools.py`: size bucket
+  uses search_listings' token-match rule (size=None → all listings); n<3 guard
+  (W28=2) returns `insufficient_data` before any network call; builds ≤5 candidate
+  tags (item's own first, then most common bucket tags); one `pytrends` call via
+  `_fetch_trend_ranking` seam ranks them; top-3 = `trending`; `item_tags_on_trend` ∩
+  `trending` determines `on_trend` vs `off_trend`; any fetch failure → `unavailable`
+  (never raises). `run_agent` wires it as step 8 (non-branching, post-selection),
+  scoped to `parsed["size"]` so the original size context is preserved even when the
+  retry ladder dropped the size filter. `app.py` prepends the verdict as a banner above
+  the listing (below retry and style banners). `pytrends>=4.9.2` added to requirements.txt;
+  pytrends FutureWarning silenced in `pytest.ini`. **Tests: +8, suite now 62 green**
+  (required failure-mode: mock `_fetch_trend_ranking` to raise → `unavailable`, no raise;
+  on_trend; off_trend; insufficient_data W28 with no network call; size=None uses all
+  40 listings; 2 run_agent wiring tests; 1 app banner test; 7 existing happy-path agent/
+  app tests updated to monkeypatch `_fetch_trend_ranking` for determinism). Live smoke
+  confirmed real Google Trends hit: `on_trend`, `trending=['vintage','y2k','graphic tee']`,
+  `source='google_trends'`.
+- **M6: DONE** — `README.md` fully rewritten: setup, all six tool signatures + specs,
+  planning-loop walkthrough, state-management table, error-handling table with real
+  examples per tool (incl. all four stretch tools), Mermaid architecture diagram, a
+  spec-reflection section (Google Trends interpretation, retry ladder, profile re-rank vs.
+  filter, additive price/trend checks), and an AI-usage section with 3 concrete
+  Claude-Code-collaboration examples (tool implementation from spec, loop/panel wiring,
+  isolating external calls behind seams). Full `pytest` suite (62) reverified green. Demo
+  recorded (`demo.mp4`) and app run end-to-end. **Project complete — all M0–M5 + 4 stretch
+  features + M6 done.**
 
 ## Milestone checklist
 
@@ -190,28 +213,24 @@
 - [x] SI1 — Implement retry logic w/ fallback
 - [x] SI2 — Implement price-comparison tool
 - [x] SI3 — Implement style-profile memory
-- [ ] SI4 — Implement trend awareness
+- [x] SI4 — Implement trend awareness
 
-- [ ] M6 — README (all sections incl. new tools), run app end-to-end, record 3–5 min demo
+- [x] M6 — README (all sections incl. new tools), run app end-to-end, record 3–5 min demo
 
 ## Repo state
 
-- `tools.py`: 5 tools implemented — `search_listings` + `compare_price` + `rank_by_profile` are
-  pure/deterministic; `suggest_outfit`/`create_fit_card` call Groq `llama-3.3-70b-versatile`, each
-  wrapped in try/except → graceful fallback strings. `compare_price` (Stretch 2) bands a price vs
-  same-category peers; verdict templates in `_PRICE_VERDICTS`. `rank_by_profile` (Stretch 3) blends
-  search-rank position (0.6) with profile affinity (0.4, min-max normalized); cold profile → no-op.
-- `tests/` (54 passing): `test_tools.py` (20) + `test_agent.py` (27) + `test_app.py` (7). The LLM
-  tests mock `tools._get_groq_client`; pure tools + profile helpers are zero-mock. `pytest.ini`
-  (`pythonpath = .`, testpaths `tests`, filters groq/pydantic-on-3.14 warning). Run with `pytest`
-  from the project root with **sandbox OFF** (Gradio import + venv need it). Note: tests that call
+- `tools.py`: 6 tools implemented — `search_listings` + `compare_price` + `rank_by_profile` are
+  pure/deterministic; `suggest_outfit`/`create_fit_card` call Groq `llama-3.3-70b-versatile`; 
+  `check_trends` (Stretch 4) calls Google Trends via `pytrends` behind a `_fetch_trend_ranking`
+  seam. All LLM/external calls wrapped in try/except → graceful fallbacks (never raise).
+- `tests/` (62 passing): `test_tools.py` (25) + `test_agent.py` (29) + `test_app.py` (8). LLM tests
+  mock `tools._get_groq_client`; Trends tests mock `tools._fetch_trend_ranking`; pure tools are
+  zero-mock. `pytest.ini` filters groq/pydantic + pytrends FutureWarning. Run with `pytest` from
+  the project root with **sandbox OFF** (Gradio import + venv need it). Note: tests that call
   `run_agent` without monkeypatching `PROFILE_PATH` update `data/style_profile.json` (by design).
-- `agent.py`: `run_agent` (full Stretch 1–3 loop) + `_parse_query` / `_llm_parse_query` /
-  `_no_results_message` / `_search_with_fallback` / `_retry_note` + Stretch 3 helpers
-  (`PROFILE_PATH`, `_empty_profile`, `_seed_profile_from_wardrobe`, `_load_profile`,
-  `_update_profile`, `_save_profile`, `_profile_note`) done. Session has `retry_note`,
-  `price_check`, `style_profile`, `profile_note` fields. `app.py`: `handle_query` (profile_note +
-  retry banners + 4th "💰 Price check" panel, returns a 4-tuple) + `_format_listing` done.
+- `agent.py`: `run_agent` (full Stretch 1–4 loop) + all parse/fallback/profile helpers done.
+  Session fields: `retry_note`, `price_check`, `style_profile`, `profile_note`, `trend_check`.
+  `app.py`: `handle_query` returns a 4-tuple; all four banners (retry, style, trend, price) wired.
 - `data/style_profile.json`: committed populated sample (grows with each non-isolated test run).
 - Data + `utils/data_loader.py` in place. `README.md` is still the starter template (full
   README w/ tool signatures is an M6 deliverable; signatures already match planning.md).

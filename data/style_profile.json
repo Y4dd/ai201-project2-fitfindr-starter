@@ -1,30 +1,44 @@
 {
   "style_tags": {
-    "y2k": 8,
-    "vintage": 9,
-    "graphic tee": 7,
-    "cottagecore": 6,
-    "streetwear": 1,
-    "preppy": 1,
-    "knitwear": 1,
-    "dark academia": 1,
-    "earth tones": 1
+    "y2k": 38,
+    "vintage": 44,
+    "graphic tee": 39,
+    "cottagecore": 36,
+    "streetwear": 4,
+    "preppy": 3,
+    "knitwear": 3,
+    "dark academia": 3,
+    "earth tones": 4,
+    "minimal": 1,
+    "grunge": 3,
+    "band tee": 3,
+    "goth": 1,
+    "platform": 1,
+    "90s": 1
   },
   "colors": {
-    "white": 8,
-    "pink": 7,
+    "white": 37,
+    "pink": 36,
     "blue": 1,
-    "purple": 5,
-    "brown": 1,
-    "cream": 1,
-    "tan": 1
+    "purple": 34,
+    "brown": 3,
+    "cream": 3,
+    "tan": 3,
+    "sage": 1,
+    "green": 1,
+    "grey": 3,
+    "charcoal": 3,
+    "black": 1
   },
   "categories": {
-    "tops": 10,
-    "bottoms": 1
+    "tops": 45,
+    "bottoms": 1,
+    "shoes": 1
   },
-  "brands": {},
-  "price_sum": 209.0,
-  "price_count": 11,
-  "runs": 11
+  "brands": {
+    "Demonia": 1
+  },
+  "price_sum": 921.0,
+  "price_count": 47,
+  "runs": 47
 }
