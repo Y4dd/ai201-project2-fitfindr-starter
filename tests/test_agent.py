@@ -75,6 +75,7 @@ def test_run_agent_happy_path_fills_full_session(monkeypatch, tmp_path):
     we assert a match was found and the session is complete, not a specific item id."""
     monkeypatch.setattr(tools, "_get_groq_client", lambda: _fake_groq_client("styled!"))
     monkeypatch.setattr(agent, "PROFILE_PATH", str(tmp_path / "profile.json"))
+    monkeypatch.setattr(tools, "_fetch_trend_ranking", lambda terms: terms[:3])
 
     session = agent.run_agent(
         "vintage graphic tee under $30, size M", _EXAMPLE_WARDROBE
@@ -156,6 +157,7 @@ def test_run_agent_uses_llm_fallback_when_regex_finds_no_description(monkeypatch
     LLM parser and uses its description to drive the search."""
     monkeypatch.setattr(tools, "_get_groq_client", lambda: _fake_groq_client("styled!"))
     monkeypatch.setattr(agent, "PROFILE_PATH", str(tmp_path / "profile.json"))
+    monkeypatch.setattr(tools, "_fetch_trend_ranking", lambda terms: terms[:3])
     monkeypatch.setattr(
         agent,
         "_llm_parse_query",
@@ -238,6 +240,7 @@ def test_run_agent_recovered_search_sets_retry_note_and_completes(monkeypatch, t
     generative tools all the way to a fit card."""
     monkeypatch.setattr(tools, "_get_groq_client", lambda: _fake_groq_client("styled!"))
     monkeypatch.setattr(agent, "PROFILE_PATH", str(tmp_path / "profile.json"))
+    monkeypatch.setattr(tools, "_fetch_trend_ranking", lambda terms: terms[:3])
 
     session = agent.run_agent("argyle knit vest size L", _EXAMPLE_WARDROBE)
 
@@ -257,6 +260,7 @@ def test_run_agent_happy_path_runs_price_check(monkeypatch, tmp_path):
     and has the expected structure rather than assuming a specific item is selected."""
     monkeypatch.setattr(tools, "_get_groq_client", lambda: _fake_groq_client("styled!"))
     monkeypatch.setattr(agent, "PROFILE_PATH", str(tmp_path / "profile.json"))
+    monkeypatch.setattr(tools, "_fetch_trend_ranking", lambda terms: terms[:3])
 
     session = agent.run_agent("vintage graphic tee under $30, size M", _EXAMPLE_WARDROBE)
 
@@ -380,6 +384,7 @@ def test_run_agent_stores_style_profile_and_profile_note(monkeypatch, tmp_path):
     """run_agent stores the loaded style_profile in the session; profile_note is set
     to a non-empty string when the profile has taste signals (warm profile)."""
     monkeypatch.setattr(tools, "_get_groq_client", lambda: _fake_groq_client("styled!"))
+    monkeypatch.setattr(tools, "_fetch_trend_ranking", lambda terms: terms[:3])
 
     # Provide a warm profile so a banner is expected.
     warm = {"style_tags": {"y2k": 3, "vintage": 2}, "colors": {"white": 4},
@@ -418,9 +423,43 @@ def test_run_agent_cold_profile_gives_none_profile_note(monkeypatch, tmp_path):
     """Cold profile (empty style_tags + colors) → no banner, profile_note is None."""
     monkeypatch.setattr(tools, "_get_groq_client", lambda: _fake_groq_client("styled!"))
     monkeypatch.setattr(agent, "PROFILE_PATH", str(tmp_path / "no_file.json"))
+    monkeypatch.setattr(tools, "_fetch_trend_ranking", lambda terms: terms[:3])
 
     # Use empty wardrobe so _load_profile returns an empty skeleton (not wardrobe-seeded).
     from utils.data_loader import get_empty_wardrobe
     session = agent.run_agent("vintage graphic tee under $30", get_empty_wardrobe())
     assert session["error"] is None
     assert session["profile_note"] is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stretch 4: run_agent wires trend check — a successful search stores the result
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_run_agent_happy_path_stores_trend_check(monkeypatch, tmp_path):
+    """A successful search stores a check_trends result in session['trend_check']
+    with the expected six-key structure."""
+    monkeypatch.setattr(tools, "_get_groq_client", lambda: _fake_groq_client("styled!"))
+    monkeypatch.setattr(agent, "PROFILE_PATH", str(tmp_path / "profile.json"))
+    monkeypatch.setattr(tools, "_fetch_trend_ranking", lambda terms: terms[:3])
+
+    session = agent.run_agent("vintage graphic tee under $30, size M", _EXAMPLE_WARDROBE)
+
+    assert session["selected_item"] is not None
+    assert session["trend_check"] is not None
+    assert "band" in session["trend_check"]
+    assert session["trend_check"]["band"] in (
+        "on_trend", "off_trend", "insufficient_data", "unavailable"
+    )
+
+
+def test_run_agent_no_results_leaves_trend_check_none(monkeypatch):
+    """The trend check is a post-selection step — the no-results error path never reaches
+    it, so trend_check stays None alongside the other downstream fields."""
+    monkeypatch.setattr(agent, "suggest_outfit", lambda *a, **k: "unused")
+    monkeypatch.setattr(agent, "create_fit_card", lambda *a, **k: "unused")
+
+    session = agent.run_agent("designer ballgown size XXS under $5", _EXAMPLE_WARDROBE)
+
+    assert session["error"]
+    assert session["trend_check"] is None

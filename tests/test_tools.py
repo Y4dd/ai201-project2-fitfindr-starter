@@ -336,3 +336,97 @@ def test_rank_by_profile_all_equal_affinity_preserves_relevance_order():
                "price_sum": 0.0, "price_count": 0, "runs": 2}
     result = rank_by_profile(listings, profile)
     assert [r["id"] for r in result] == ["first", "second", "third"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Tool 6: check_trends  (Stretch 4 — external call via _fetch_trend_ranking seam)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_check_trends_unavailable_when_fetch_raises(monkeypatch):
+    """REQUIRED failure mode: _fetch_trend_ranking raises (e.g. 429 / network error)
+    → band='unavailable', trending=[], source='unavailable'. Never raises itself."""
+    def fail(terms):
+        raise RuntimeError("429 Too Many Requests")
+    monkeypatch.setattr(tools, "_fetch_trend_ranking", fail)
+
+    item = _make_listing("it", style_tags=["y2k"])
+    bucket = [_make_listing(str(i), style_tags=["vintage"]) for i in range(4)]
+    result = tools.check_trends(item, bucket)
+
+    assert result["band"] == "unavailable"
+    assert result["trending"] == []
+    assert result["source"] == "unavailable"
+    assert isinstance(result["verdict"], str) and result["verdict"].strip()
+
+
+def test_check_trends_on_trend_when_item_tags_in_top3(monkeypatch):
+    """When the faked ranking puts the item's tag in the top 3, band is on_trend
+    and item_tags_on_trend is non-empty."""
+    monkeypatch.setattr(
+        tools, "_fetch_trend_ranking",
+        lambda terms: ["y2k"] + [t for t in terms if t != "y2k"],
+    )
+
+    item = _make_listing("it", style_tags=["y2k"])
+    bucket = [_make_listing(str(i), style_tags=["vintage"]) for i in range(4)]
+    result = tools.check_trends(item, bucket)
+
+    assert result["band"] == "on_trend"
+    assert "y2k" in result["item_tags_on_trend"]
+    assert result["source"] == "google_trends"
+    assert isinstance(result["verdict"], str) and result["verdict"].strip()
+
+
+def test_check_trends_off_trend_when_item_tags_not_in_top3(monkeypatch):
+    """When none of the item's tags appear in the top 3, band is off_trend.
+    Achieved by a bucket with 4+ distinct non-grunge tags so 'grunge' lands 4th+."""
+    def grunge_last(terms):
+        return [t for t in terms if t != "grunge"] + [t for t in terms if t == "grunge"]
+    monkeypatch.setattr(tools, "_fetch_trend_ranking", grunge_last)
+
+    item = _make_listing("it", style_tags=["grunge"])
+    bucket = [
+        _make_listing("a", style_tags=["vintage", "cottagecore"]),
+        _make_listing("b", style_tags=["minimal", "vintage"]),
+        _make_listing("c", style_tags=["cottagecore", "minimal"]),
+        _make_listing("d", style_tags=["vintage"]),
+    ]
+    result = tools.check_trends(item, bucket)
+
+    assert result["band"] == "off_trend"
+    assert result["item_tags_on_trend"] == []
+    assert isinstance(result["verdict"], str) and result["verdict"].strip()
+
+
+def test_check_trends_insufficient_data_sparse_size_bucket(monkeypatch):
+    """A size bucket with < 3 listings returns insufficient_data immediately,
+    before any network call. In the real dataset W28 has exactly 2 listings."""
+    def fail_if_called(terms):
+        raise AssertionError("_fetch_trend_ranking must not be called for a sparse bucket")
+    monkeypatch.setattr(tools, "_fetch_trend_ranking", fail_if_called)
+
+    item = next(i for i in load_listings() if i["id"] == "lst_002")
+    result = tools.check_trends(item, load_listings(), size="W28")  # only 2 W28 listings
+
+    assert result["band"] == "insufficient_data"
+    assert result["trending"] == []
+    assert "2" in result["verdict"]   # verdict cites the sparse count
+
+
+def test_check_trends_size_none_uses_all_listings_as_bucket(monkeypatch):
+    """size=None means no size filter — all 40 listings form the bucket, large enough
+    to skip the guard and reach the trend fetch."""
+    fetched: dict = {}
+
+    def record(terms):
+        fetched["terms"] = terms
+        return terms[:3]
+
+    monkeypatch.setattr(tools, "_fetch_trend_ranking", record)
+
+    item = next(i for i in load_listings() if i["id"] == "lst_002")
+    result = tools.check_trends(item, load_listings(), size=None)
+
+    assert "terms" in fetched                        # fetch was called (bucket ≥ 3)
+    assert result["band"] in ("on_trend", "off_trend")  # not short-circuited
+    assert result["size"] is None

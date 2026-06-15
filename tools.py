@@ -349,6 +349,29 @@ def compare_price(new_item: dict, comparables: list[dict]) -> dict:
     }
 
 
+# ── Tool 6 seam: Google Trends fetch (isolated so tests can monkeypatch it) ───
+
+def _fetch_trend_ranking(terms: list[str]) -> list[str]:
+    """Call Google Trends via pytrends to rank `terms` by live search momentum.
+
+    Returns `terms` ordered by mean interest over the last 3 months (descending),
+    with alphabetical tie-breaking for stability. Raises on any failure (429,
+    network error, empty response) so `check_trends` can handle it gracefully.
+    """
+    from pytrends.request import TrendReq  # lazy import — pytrends only needed at runtime
+
+    pytrends = TrendReq(hl="en-US", tz=360)
+    pytrends.build_payload(terms, timeframe="today 3-m")
+    df = pytrends.interest_over_time()
+    if df is None or df.empty:
+        raise ValueError("Google Trends returned no data")
+    term_cols = [c for c in df.columns if c in terms]
+    if not term_cols:
+        raise ValueError("No matching term columns in Google Trends response")
+    means = df[term_cols].mean()
+    return sorted(means.index.tolist(), key=lambda t: (-means[t], t))
+
+
 # ── Tool 5: rank_by_profile (Stretch 3) ──────────────────────────────────────
 
 def rank_by_profile(listings: list[dict], profile: dict) -> list[dict]:
@@ -409,3 +432,116 @@ def rank_by_profile(listings: list[dict], profile: dict) -> list[dict]:
     # Step 4: stable sort descending — equal scores keep incoming (relevance) order.
     scored.sort(key=lambda x: x[0], reverse=True)
     return [listing for _, listing in scored]
+
+
+# ── Tool 6: check_trends (Stretch 4) ─────────────────────────────────────────
+
+def check_trends(
+    new_item: dict,
+    listings: list[dict],
+    size: str | None = None,
+) -> dict:
+    """Check which styles are trending in live Google Trends among size-available listings.
+
+    Args:
+        new_item: The selected listing (reads its style_tags and title).
+        listings: Full dataset from load_listings() — used only to build the size bucket.
+        size:     The requested size from the parsed query. None → all listings.
+
+    Returns a dict with six keys:
+        band              — "on_trend" | "off_trend" | "insufficient_data" | "unavailable"
+        verdict           — human-readable one-line string for the banner
+        trending          — top-3 style tags by search momentum ([] on insufficient/unavailable)
+        item_tags_on_trend— item's style_tags that appear in trending ([] when off/unavailable)
+        size              — the scope used (or None)
+        source            — "google_trends" on a live hit, else "unavailable"
+
+    Never raises — a failed Trends call degrades to band="unavailable".
+    """
+    # Step 1: size bucket — reuse search_listings' token-match rule.
+    if size is not None:
+        wanted = size.strip().lower()
+        bucket = [
+            l for l in listings
+            if wanted in re.split(r"[/\s]+", l["size"].lower())
+        ]
+    else:
+        bucket = list(listings)
+    n = len(bucket)
+
+    # Step 2: insufficient data guard — short-circuit before any network call.
+    if n < 3:
+        return {
+            "band": "insufficient_data",
+            "verdict": (
+                f"🔍 Not enough size {size} listings to assemble a trend read "
+                f"(only {n} found)."
+            ),
+            "trending": [],
+            "item_tags_on_trend": [],
+            "size": size,
+            "source": "unavailable",
+        }
+
+    # Step 3: build up to 5 candidate style tags — item's own tags first so it can be judged.
+    item_tags = new_item.get("style_tags", [])
+    candidates: list[str] = list(item_tags)
+    tag_counts: dict[str, int] = {}
+    for l in bucket:
+        for tag in l.get("style_tags", []):
+            tag_counts[tag] = tag_counts.get(tag, 0) + 1
+    for tag, _ in sorted(tag_counts.items(), key=lambda x: (-x[1], x[0])):
+        if tag not in candidates:
+            candidates.append(tag)
+        if len(candidates) >= 5:
+            break
+
+    if not candidates:
+        return _unavailable_dict(size)
+
+    # Step 4: live ranking via the seam — tests monkeypatch this (like _get_groq_client).
+    try:
+        ranked = _fetch_trend_ranking(candidates)
+        trending = ranked[:3]
+    except Exception:
+        return _unavailable_dict(size)
+
+    # Steps 5 & 6: on-trend tags and band.
+    item_tags_on_trend = [tag for tag in item_tags if tag in trending]
+    band = "on_trend" if item_tags_on_trend else "off_trend"
+
+    if band == "on_trend":
+        tags_str = " & ".join(item_tags_on_trend[:2])
+        item_name = new_item.get("title", "item")
+        size_scope = f" (within what's available in size {size})" if size else ""
+        verdict = (
+            f"🔥 On-trend — your {item_name}'s {tags_str} styles are among the "
+            f"top-rising fashion searches on Google right now{size_scope}."
+        )
+    else:
+        rising_str = ", ".join(trending)
+        size_label = f" in {size}" if size else ""
+        verdict = (
+            f"🌿 Under the radar — none of this piece's styles are in the top "
+            f"fashion searches right now (currently rising{size_label}: {rising_str})."
+        )
+
+    return {
+        "band": band,
+        "verdict": verdict,
+        "trending": trending,
+        "item_tags_on_trend": item_tags_on_trend,
+        "size": size,
+        "source": "google_trends",
+    }
+
+
+def _unavailable_dict(size: str | None) -> dict:
+    return {
+        "band": "unavailable",
+        "verdict": "🌐 Couldn't reach Google Trends just now — trend check unavailable for this run.",
+        "trending": [],
+        "item_tags_on_trend": [],
+        "size": size,
+        "source": "unavailable",
+    }

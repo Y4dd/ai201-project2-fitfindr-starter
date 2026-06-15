@@ -55,6 +55,7 @@ def test_handle_query_happy_path_formats_listing_and_fills_panels(monkeypatch):
     carry the outfit suggestion and fit card. rank_by_profile re-orders results
     based on the example wardrobe profile, so we assert structure not a specific item."""
     monkeypatch.setattr(tools, "_get_groq_client", lambda: _fake_groq_client("styled!"))
+    monkeypatch.setattr(tools, "_fetch_trend_ranking", lambda terms: terms[:3])
 
     listing, price, outfit, fit = app.handle_query(
         "vintage graphic tee under $30, size M", "Example wardrobe"
@@ -70,6 +71,7 @@ def test_handle_query_shows_price_check_panel(monkeypatch):
     with the compare_price verdict. rank_by_profile may select a different top item
     than lst_002, so we assert the verdict structure rather than a specific price."""
     monkeypatch.setattr(tools, "_get_groq_client", lambda: _fake_groq_client("styled!"))
+    monkeypatch.setattr(tools, "_fetch_trend_ranking", lambda terms: terms[:3])
 
     listing, price, outfit, fit = app.handle_query(
         "vintage graphic tee under $30, size M", "Example wardrobe"
@@ -147,3 +149,34 @@ def test_handle_query_prepends_profile_note_banner(monkeypatch):
     listing, price, outfit, fitcard = app.handle_query("graphic tee", "Example wardrobe")
     assert "↑ Ranked for your style" in listing
     assert "Y2K Baby Tee" in listing   # listing body still present
+
+
+def test_handle_query_shows_trend_check_banner(monkeypatch):
+    """Stretch 4: when run_agent returns a trend_check, handle_query renders its verdict
+    as a banner above the listing text."""
+    trend_verdict = "🔥 On-trend — vintage styles are rising on Google right now."
+    fake_session = {
+        "error": None,
+        "selected_item": {
+            "id": "lst_002", "title": "Y2K Baby Tee", "description": "cute tee",
+            "price": 18.0, "condition": "excellent", "platform": "depop",
+            "size": "S/M", "brand": None, "colors": ["white"], "style_tags": ["y2k"],
+        },
+        "retry_note": None,
+        "profile_note": None,
+        "price_check": None,
+        "trend_check": {
+            "band": "on_trend",
+            "verdict": trend_verdict,
+            "trending": ["vintage", "y2k"],
+            "item_tags_on_trend": ["y2k"],
+            "size": "M",
+            "source": "google_trends",
+        },
+        "outfit_suggestion": "pair with jeans",
+        "fit_card": "casual chic",
+    }
+    monkeypatch.setattr(app, "run_agent", lambda q, w: fake_session)
+    listing, price, outfit, fitcard = app.handle_query("graphic tee", "Example wardrobe")
+    assert trend_verdict in listing
+    assert "Y2K Baby Tee" in listing   # listing body still present below the banner

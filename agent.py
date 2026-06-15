@@ -23,7 +23,7 @@ import pathlib
 import re
 
 import tools
-from tools import search_listings, suggest_outfit, create_fit_card, compare_price, rank_by_profile
+from tools import search_listings, suggest_outfit, create_fit_card, compare_price, rank_by_profile, check_trends
 from utils.data_loader import load_listings
 
 PROFILE_PATH = "data/style_profile.json"
@@ -343,6 +343,7 @@ def _new_session(query: str, wardrobe: dict) -> dict:
         "error": None,               # set if the interaction ended early
         "style_profile": None,       # Stretch 3: loaded at run start, updated on selection
         "profile_note": None,        # Stretch 3: banner from pre-update profile taste signals
+        "trend_check": None,         # Stretch 4: check_trends verdict dict (None on error path)
     }
 
 
@@ -414,7 +415,10 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     session["style_profile"] = _update_profile(pre_update_profile, selected)
     _save_profile(session["style_profile"])
 
-    # Steps 8–9 — style it, caption it, return the filled session.
+    # Step 8 (Stretch 4) — trend check: non-branching step using the parsed size scope.
+    session["trend_check"] = check_trends(selected, load_listings(), parsed["size"])
+
+    # Steps 9–10 — style it, caption it, return the filled session.
     session["outfit_suggestion"] = suggest_outfit(selected, wardrobe)
     session["fit_card"] = create_fit_card(session["outfit_suggestion"], selected)
     return session
