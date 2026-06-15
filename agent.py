@@ -23,7 +23,7 @@ import pathlib
 import re
 
 import tools
-from tools import search_listings, suggest_outfit, create_fit_card, compare_price
+from tools import search_listings, suggest_outfit, create_fit_card, compare_price, rank_by_profile
 from utils.data_loader import load_listings
 
 PROFILE_PATH = "data/style_profile.json"
@@ -301,6 +301,23 @@ def _save_profile(profile: dict) -> None:
         pass
 
 
+def _profile_note(profile: dict) -> str | None:
+    """Return a banner string from the profile's top taste signals, or None if the
+    profile is cold (no style_tags or colors with nonzero counts).
+
+    Format: "↑ Ranked for your style — you tend toward y2k, vintage, white"
+    (top 3 signals across style_tags and colors combined, sorted by count desc).
+    """
+    signals = list(profile.get("style_tags", {}).items()) + \
+              list(profile.get("colors", {}).items())
+    signals = [(tag, count) for tag, count in signals if count > 0]
+    if not signals:
+        return None
+    top = sorted(signals, key=lambda x: x[1], reverse=True)[:3]
+    taste_str = ", ".join(tag for tag, _ in top)
+    return f"↑ Ranked for your style — you tend toward {taste_str}"
+
+
 # ── session state ─────────────────────────────────────────────────────────────
 
 def _new_session(query: str, wardrobe: dict) -> dict:
@@ -324,6 +341,8 @@ def _new_session(query: str, wardrobe: dict) -> dict:
         "outfit_suggestion": None,   # string returned by suggest_outfit
         "fit_card": None,            # string returned by create_fit_card
         "error": None,               # set if the interaction ended early
+        "style_profile": None,       # Stretch 3: loaded at run start, updated on selection
+        "profile_note": None,        # Stretch 3: banner from pre-update profile taste signals
     }
 
 
@@ -393,9 +412,10 @@ def run_agent(query: str, wardrobe: dict) -> dict:
         parsed["description"] = query.strip()
     session["parsed"] = parsed
 
-    # Step 3 — search with fallback (Stretch 1): exact, then relax size, then size+price.
-    # _search_with_fallback returns the first non-empty result set plus a retry_note
-    # naming what (if anything) it had to loosen to find a match.
+    # Step 3a (Stretch 3) — load style profile before the search.
+    session["style_profile"] = _load_profile(wardrobe)
+
+    # Step 3b — search with fallback (Stretch 1): exact, then relax size, then size+price.
     results, retry_note = _search_with_fallback(
         parsed["description"], parsed["size"], parsed["max_price"]
     )
@@ -403,21 +423,27 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     session["retry_note"] = retry_note
 
     # Step 4 — the conditional branch: nothing even after loosening => error and stop.
-    # suggest_outfit is never called with empty input.
+    # suggest_outfit and rank_by_profile are never called with empty input.
     if not session["search_results"]:
         session["error"] = _no_results_message(parsed)
         return session
 
-    # A match — select the top item.
-    selected = session["search_results"][0]
+    # Step 5 (Stretch 3) — re-rank survivors by style profile; select top result.
+    pre_update_profile = session["style_profile"]
+    ranked = rank_by_profile(session["search_results"], pre_update_profile)
+    session["search_results"] = ranked
+    selected = ranked[0]
     session["selected_item"] = selected
+    session["profile_note"] = _profile_note(pre_update_profile)
 
-    # Step 7 (Stretch 2) — price check: an added, non-branching step. The agent owns the
-    # data read (load_listings) and passes it in; compare_price stays pure and never gates
-    # control flow, so it can't block the generative tools below.
+    # Step 6 (Stretch 2) — price check: non-branching step after selection.
     session["price_check"] = compare_price(selected, load_listings())
 
-    # Steps 9–10 — style it, caption it, return the filled session.
+    # Step 7 (Stretch 3) — learn from the selection and persist.
+    session["style_profile"] = _update_profile(pre_update_profile, selected)
+    _save_profile(session["style_profile"])
+
+    # Steps 8–9 — style it, caption it, return the filled session.
     session["outfit_suggestion"] = suggest_outfit(selected, wardrobe)
     session["fit_card"] = create_fit_card(session["outfit_suggestion"], selected)
     return session
