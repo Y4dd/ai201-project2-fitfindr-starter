@@ -56,7 +56,10 @@ def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str, 
     #    Stretch 1 — if the retry ladder loosened a filter to find this off-spec item,
     #    prepend its note as a banner above the listing so the user knows why.
     listing_text = _format_listing(session["selected_item"])
+    profile_note = session.get("profile_note")
     retry_note = session.get("retry_note")
+    if profile_note:
+        listing_text = f"{profile_note}\n\n{listing_text}"
     if retry_note:
         listing_text = f"{retry_note}\n\n{listing_text}"
 
