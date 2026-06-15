@@ -150,12 +150,26 @@
   `great_deal`; no-results leaves `price_check` None), and 1 app panel test. Live smoke confirmed all
   three paths end-to-end: `💰 Great deal — $18 is below the $21.5 median for tops (14 comparable
   listings).`, the `insufficient_data` belt verdict, and `price_check = None` on the impossible query.
-- **NEXT: SI3 — implement style-profile memory** (`rank_by_profile`, Tool 5 spec in `planning.md`).
-  New session after `/clear`; TDD + a failure-mode test (cold/empty profile → listings returned
-  unchanged), plus agent helpers `_load_profile` / `_update_profile` / `_save_profile` behind a
-  monkeypatchable `PROFILE_PATH` (committed `data/style_profile.json` sample). Then **SI4** (needs
-  `pip install pytrends` + a `_fetch_trend_ranking` seam), then **M6** (README + run app +
-  3–5 min demo).
+- **SI3 (implement style-profile memory): DONE** — built test-first (TDD, subagent-driven).
+  New pure/deterministic tool `rank_by_profile(listings, profile) -> list[dict]` in `tools.py`:
+  blends search-rank position (0.6) with profile affinity (0.4, min-max normalized) then stable-sort
+  descends; cold/empty profile → unchanged order (required failure mode, 4 tests). Agent helpers in
+  `agent.py`: `PROFILE_PATH` module-level constant (monkeypatchable); `_load_profile(wardrobe)` reads
+  `data/style_profile.json`, seeds from wardrobe on missing/corrupt, returns empty skeleton on cold
+  start with empty wardrobe, never raises; `_update_profile(profile, item)` folds style_tags/colors/
+  category/brand/price/runs into a deep-copied profile; `_save_profile` writes JSON, swallows OSError
+  (6 + 1 wardrobe-seed tests). `run_agent` extended: loads profile → re-ranks survivors → selects
+  `results[0]` → sets `profile_note` banner (top 3 taste signals from pre-update profile, `None` on
+  cold) → updates + saves profile (3 wiring tests; critical invariant preserved: `rank_by_profile` +
+  `suggest_outfit` never called with empty results). `app.py` gains a `profile_note` banner above
+  the listing (1 test). `data/style_profile.json` committed as a populated sample. **Tests: +14,
+  suite now 54 green.** Live profile accumulates across test runs that don't isolate `PROFILE_PATH`
+  (by design — the agent learns), so the committed sample grows with each `pytest` run; this is
+  expected behavior.
+- **NEXT: SI4 — implement trend awareness** (`check_trends`, Tool 6 spec in `planning.md`).
+  New session after `/clear`; needs `pip install pytrends` first; TDD with `_fetch_trend_ranking`
+  seam (same pattern as `_get_groq_client`); failure-mode test = mock the seam to raise → `band="unavailable"`.
+  Then **M6** (README + run app + 3–5 min demo).
 
 ## Milestone checklist
 
@@ -175,29 +189,30 @@
 **Stretch — IMPLEMENTATION phase** (one feature per session, `/clear` between; TDD + failure-mode test each):
 - [x] SI1 — Implement retry logic w/ fallback
 - [x] SI2 — Implement price-comparison tool
-- [ ] SI3 — Implement style-profile memory
+- [x] SI3 — Implement style-profile memory
 - [ ] SI4 — Implement trend awareness
 
 - [ ] M6 — README (all sections incl. new tools), run app end-to-end, record 3–5 min demo
 
 ## Repo state
 
-- `tools.py`: 4 tools implemented — `search_listings` + `compare_price` are pure/deterministic;
-  `suggest_outfit`/`create_fit_card` call Groq `llama-3.3-70b-versatile`, each wrapped in
-  try/except → graceful fallback strings. `compare_price` (Stretch 2) bands a price vs same-category
-  peers; verdict templates in `_PRICE_VERDICTS`.
-- `tests/` (40 passing): `test_tools.py` (16) + `test_agent.py` (18) + `test_app.py` (6). The LLM
-  tests mock `tools._get_groq_client`; the ladder + `compare_price` unit tests are zero-mock (pure
-  over the real dataset / small fixtures). `pytest.ini` (`pythonpath = .`, testpaths `tests`, filters
-  the groq/pydantic-on-3.14 warning). Run with `pytest` from the project root. **Gotcha:** collecting
-  `test_app.py` imports gradio, which builds an httpx client against the sandbox's SOCKS proxy and
-  errors at import — run the suite with the **sandbox OFF** (or run `test_tools.py`/`test_agent.py`
-  alone in-sandbox).
-- `agent.py`: `run_agent` (conditional loop + Stretch 1 ladder + Stretch 2 price check) +
-  `_parse_query` / `_llm_parse_query` / `_no_results_message` / `_search_with_fallback` /
-  `_retry_note` helpers done; session has `retry_note` + `price_check` fields. `app.py`:
-  `handle_query` (retry banner + 4th "💰 Price check" panel, returns a 4-tuple) + `_format_listing`
-  done.
+- `tools.py`: 5 tools implemented — `search_listings` + `compare_price` + `rank_by_profile` are
+  pure/deterministic; `suggest_outfit`/`create_fit_card` call Groq `llama-3.3-70b-versatile`, each
+  wrapped in try/except → graceful fallback strings. `compare_price` (Stretch 2) bands a price vs
+  same-category peers; verdict templates in `_PRICE_VERDICTS`. `rank_by_profile` (Stretch 3) blends
+  search-rank position (0.6) with profile affinity (0.4, min-max normalized); cold profile → no-op.
+- `tests/` (54 passing): `test_tools.py` (20) + `test_agent.py` (27) + `test_app.py` (7). The LLM
+  tests mock `tools._get_groq_client`; pure tools + profile helpers are zero-mock. `pytest.ini`
+  (`pythonpath = .`, testpaths `tests`, filters groq/pydantic-on-3.14 warning). Run with `pytest`
+  from the project root with **sandbox OFF** (Gradio import + venv need it). Note: tests that call
+  `run_agent` without monkeypatching `PROFILE_PATH` update `data/style_profile.json` (by design).
+- `agent.py`: `run_agent` (full Stretch 1–3 loop) + `_parse_query` / `_llm_parse_query` /
+  `_no_results_message` / `_search_with_fallback` / `_retry_note` + Stretch 3 helpers
+  (`PROFILE_PATH`, `_empty_profile`, `_seed_profile_from_wardrobe`, `_load_profile`,
+  `_update_profile`, `_save_profile`, `_profile_note`) done. Session has `retry_note`,
+  `price_check`, `style_profile`, `profile_note` fields. `app.py`: `handle_query` (profile_note +
+  retry banners + 4th "💰 Price check" panel, returns a 4-tuple) + `_format_listing` done.
+- `data/style_profile.json`: committed populated sample (grows with each non-isolated test run).
 - Data + `utils/data_loader.py` in place. `README.md` is still the starter template (full
   README w/ tool signatures is an M6 deliverable; signatures already match planning.md).
 

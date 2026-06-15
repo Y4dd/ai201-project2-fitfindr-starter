@@ -1,0 +1,30 @@
+{
+  "style_tags": {
+    "y2k": 8,
+    "vintage": 9,
+    "graphic tee": 7,
+    "cottagecore": 6,
+    "streetwear": 1,
+    "preppy": 1,
+    "knitwear": 1,
+    "dark academia": 1,
+    "earth tones": 1
+  },
+  "colors": {
+    "white": 8,
+    "pink": 7,
+    "blue": 1,
+    "purple": 5,
+    "brown": 1,
+    "cream": 1,
+    "tan": 1
+  },
+  "categories": {
+    "tops": 10,
+    "bottoms": 1
+  },
+  "brands": {},
+  "price_sum": 209.0,
+  "price_count": 11,
+  "runs": 11
+}
