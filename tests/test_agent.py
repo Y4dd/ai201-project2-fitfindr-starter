@@ -68,12 +68,13 @@ def test_parse_no_filters_leaves_size_and_price_none():
 # run_agent: happy path — full session state filled
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_run_agent_happy_path_fills_full_session(monkeypatch):
+def test_run_agent_happy_path_fills_full_session(monkeypatch, tmp_path):
     """A query that matches and runs all the way through:
     selected_item -> outfit_suggestion -> fit_card, with error staying None.
     Note: rank_by_profile re-orders results by the example wardrobe profile, so
     we assert a match was found and the session is complete, not a specific item id."""
     monkeypatch.setattr(tools, "_get_groq_client", lambda: _fake_groq_client("styled!"))
+    monkeypatch.setattr(agent, "PROFILE_PATH", str(tmp_path / "profile.json"))
 
     session = agent.run_agent(
         "vintage graphic tee under $30, size M", _EXAMPLE_WARDROBE
@@ -150,10 +151,11 @@ def test_llm_parse_query_returns_none_on_unparseable_output(monkeypatch):
     assert agent._llm_parse_query("size M under $30") is None
 
 
-def test_run_agent_uses_llm_fallback_when_regex_finds_no_description(monkeypatch):
+def test_run_agent_uses_llm_fallback_when_regex_finds_no_description(monkeypatch, tmp_path):
     """When the regex extracts only filters (empty description), the loop consults the
     LLM parser and uses its description to drive the search."""
     monkeypatch.setattr(tools, "_get_groq_client", lambda: _fake_groq_client("styled!"))
+    monkeypatch.setattr(agent, "PROFILE_PATH", str(tmp_path / "profile.json"))
     monkeypatch.setattr(
         agent,
         "_llm_parse_query",
@@ -230,11 +232,12 @@ def test_fallback_with_no_filters_has_nothing_to_relax():
 # Stretch 1: run_agent wires the ladder — a recovered near-miss runs to completion
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_run_agent_recovered_search_sets_retry_note_and_completes(monkeypatch):
+def test_run_agent_recovered_search_sets_retry_note_and_completes(monkeypatch, tmp_path):
     """A near-miss (a size-L vest that only exists in M) is recovered by the ladder:
     run_agent stores retry_note, selects the off-spec item, and still runs the
     generative tools all the way to a fit card."""
     monkeypatch.setattr(tools, "_get_groq_client", lambda: _fake_groq_client("styled!"))
+    monkeypatch.setattr(agent, "PROFILE_PATH", str(tmp_path / "profile.json"))
 
     session = agent.run_agent("argyle knit vest size L", _EXAMPLE_WARDROBE)
 
@@ -248,11 +251,12 @@ def test_run_agent_recovered_search_sets_retry_note_and_completes(monkeypatch):
 # Stretch 2: run_agent wires the price check — a successful search stores a verdict
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_run_agent_happy_path_runs_price_check(monkeypatch):
+def test_run_agent_happy_path_runs_price_check(monkeypatch, tmp_path):
     """A successful search stores a compare_price result in session['price_check'].
     Note: rank_by_profile re-orders results, so we assert a price_check verdict exists
     and has the expected structure rather than assuming a specific item is selected."""
     monkeypatch.setattr(tools, "_get_groq_client", lambda: _fake_groq_client("styled!"))
+    monkeypatch.setattr(agent, "PROFILE_PATH", str(tmp_path / "profile.json"))
 
     session = agent.run_agent("vintage graphic tee under $30, size M", _EXAMPLE_WARDROBE)
 
@@ -340,6 +344,10 @@ def test_update_profile_folds_all_signals():
     assert updated["price_count"] == 2
     # Runs bumped.
     assert updated["runs"] == 2
+    # Original profile must be unchanged (immutability guarantee).
+    assert profile["style_tags"]["y2k"] == 1
+    assert "vintage" not in profile["style_tags"]
+    assert profile["runs"] == 1
 
 
 def test_save_profile_writes_to_profile_path(monkeypatch, tmp_path):
@@ -384,7 +392,7 @@ def test_run_agent_stores_style_profile_and_profile_note(monkeypatch, tmp_path):
     session = agent.run_agent("vintage graphic tee under $30, size M", _EXAMPLE_WARDROBE)
     assert session["error"] is None
     assert isinstance(session["style_profile"], dict)
-    assert session["style_profile"]["runs"] >= 3   # at least the pre-loaded value (was bumped by _update_profile)
+    assert session["style_profile"]["runs"] == 4   # pre-loaded runs=3, _update_profile bumps to 4
     # profile_note should be a non-empty string naming at least one taste signal.
     assert isinstance(session["profile_note"], str)
     assert len(session["profile_note"]) > 0
