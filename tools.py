@@ -347,3 +347,65 @@ def compare_price(new_item: dict, comparables: list[dict]) -> dict:
         "n_comparables": n,
         "category": category,
     }
+
+
+# ── Tool 5: rank_by_profile (Stretch 3) ──────────────────────────────────────
+
+def rank_by_profile(listings: list[dict], profile: dict) -> list[dict]:
+    """Re-rank an already-relevance-sorted list of listings by the user's learned
+    style profile, blending search-position score with profile-affinity score.
+
+    Pure and deterministic — no LLM, no filesystem. Returns the same listings in
+    a (possibly new) order; never adds or drops items.
+
+    Args:
+        listings: Listings already sorted by search relevance (best first).
+        profile:  Style-profile dict with keys:
+                    style_tags  — {tag: count}
+                    colors      — {color: count}
+                    categories  — {category: count}
+                    brands      — {brand: count}
+                    price_sum, price_count, runs  (not used in scoring)
+
+    Returns:
+        The same listing dicts reordered by a blended score:
+            final = 0.6 * rel_norm + 0.4 * aff_norm
+        where rel_norm encodes original position and aff_norm is min-max affinity.
+        Stable sort: equal scores preserve the incoming (relevance) order.
+        Never raises.
+    """
+    n = len(listings)
+    if n == 0:
+        return listings
+
+    # Step 1: compute raw affinity for each listing.
+    style_weights = profile.get("style_tags", {})
+    color_weights = profile.get("colors", {})
+    cat_weights = profile.get("categories", {})
+    brand_weights = profile.get("brands", {})
+
+    affinities = []
+    for listing in listings:
+        aff = sum(style_weights.get(tag, 0) for tag in listing.get("style_tags", []))
+        aff += sum(color_weights.get(c, 0) for c in listing.get("colors", []))
+        aff += cat_weights.get(listing.get("category", ""), 0)
+        aff += brand_weights.get(listing.get("brand") or "", 0)
+        affinities.append(aff)
+
+    # Step 2: normalize affinities (min-max); all-equal (incl. all-zero) → 0.0.
+    aff_min, aff_max = min(affinities), max(affinities)
+    if aff_max == aff_min:
+        aff_norms = [0.0] * n
+    else:
+        aff_norms = [(a - aff_min) / (aff_max - aff_min) for a in affinities]
+
+    # Step 3: blend with relevance position (best index = 1.0, worst = 0.0).
+    scored = []
+    for i, (listing, aff_norm) in enumerate(zip(listings, aff_norms)):
+        rel_norm = (n - 1 - i) / (n - 1) if n > 1 else 1.0
+        final = 0.6 * rel_norm + 0.4 * aff_norm
+        scored.append((final, listing))
+
+    # Step 4: stable sort descending — equal scores keep incoming (relevance) order.
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [listing for _, listing in scored]

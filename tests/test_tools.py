@@ -260,3 +260,79 @@ def test_compare_price_anchor_numbers_match_spec():
     assert result["median"] == 21.5
     assert "21.5" in result["verdict"]
     assert "tops" in result["verdict"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Tool 5: rank_by_profile  (pure / deterministic — zero mocks)
+# ─────────────────────────────────────────────────────────────────────────────
+
+from tools import rank_by_profile
+
+def _make_listing(id, style_tags=None, colors=None, category="tops", brand=None):
+    """Minimal listing fixture for rank_by_profile tests."""
+    return {
+        "id": id, "title": id, "description": "", "category": category,
+        "style_tags": style_tags or [], "size": "M", "condition": "good",
+        "price": 20.0, "colors": colors or [], "brand": brand, "platform": "depop",
+    }
+
+
+def test_rank_by_profile_cold_profile_returns_unchanged_order():
+    """REQUIRED FAILURE MODE: when the profile is empty/cold every affinity is 0,
+    so aff_norm is 0, the blend reduces to rel_norm only, and the incoming order
+    is preserved exactly."""
+    listings = [
+        _make_listing("a", style_tags=["y2k"], colors=["white"]),
+        _make_listing("b", style_tags=["grunge"], colors=["black"]),
+    ]
+    cold = {"style_tags": {}, "colors": {}, "categories": {}, "brands": {},
+            "price_sum": 0.0, "price_count": 0, "runs": 0}
+    result = rank_by_profile(listings, cold)
+    assert [r["id"] for r in result] == ["a", "b"]
+
+
+def test_rank_by_profile_strong_affinity_rises_to_top():
+    """A listing that strongly matches the profile should bubble above a weaker one,
+    even if it started lower in the search-relevance order.
+
+    With n=3 and blend 0.6*rel + 0.4*aff, "b" at index 1 (rel=0.5) with full
+    affinity (aff_norm=1.0) scores 0.70, beating "a" at index 0 (rel=1.0) with
+    zero affinity (aff_norm=0.0) which scores 0.60. A decoy "c" at index 2 keeps
+    the math clean and lets rel_norm spread across three slots."""
+    # "a" (index 0, top relevance) has no tags in the profile → aff=0
+    # "b" (index 1, mid relevance) is a perfect profile match → aff_norm=1.0
+    # "c" (index 2, lowest relevance) has no tags in the profile → aff=0
+    listings = [
+        _make_listing("a", style_tags=["plain"], colors=["beige"]),
+        _make_listing("b", style_tags=["y2k", "vintage"], colors=["white"]),
+        _make_listing("c", style_tags=["basic"], colors=["grey"]),
+    ]
+    profile = {"style_tags": {"y2k": 5, "vintage": 4}, "colors": {"white": 3},
+               "categories": {}, "brands": {},
+               "price_sum": 0.0, "price_count": 0, "runs": 3}
+    result = rank_by_profile(listings, profile)
+    assert result[0]["id"] == "b"
+
+
+def test_rank_by_profile_single_listing_returns_unchanged():
+    """With one listing rel_norm=1.0 and the sort is trivially stable — no crash."""
+    listings = [_make_listing("solo", style_tags=["y2k"])]
+    profile = {"style_tags": {"y2k": 2}, "colors": {}, "categories": {}, "brands": {},
+               "price_sum": 0.0, "price_count": 0, "runs": 1}
+    result = rank_by_profile(listings, profile)
+    assert len(result) == 1 and result[0]["id"] == "solo"
+
+
+def test_rank_by_profile_all_equal_affinity_preserves_relevance_order():
+    """When every listing has the same nonzero affinity, aff_norm is 0 for all,
+    so relevance order dominates and the incoming order is preserved."""
+    tag = "y2k"
+    listings = [
+        _make_listing("first", style_tags=[tag]),
+        _make_listing("second", style_tags=[tag]),
+        _make_listing("third", style_tags=[tag]),
+    ]
+    profile = {"style_tags": {tag: 3}, "colors": {}, "categories": {}, "brands": {},
+               "price_sum": 0.0, "price_count": 0, "runs": 2}
+    result = rank_by_profile(listings, profile)
+    assert [r["id"] for r in result] == ["first", "second", "third"]
